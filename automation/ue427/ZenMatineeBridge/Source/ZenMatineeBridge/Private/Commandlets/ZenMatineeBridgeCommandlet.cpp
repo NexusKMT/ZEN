@@ -1,5 +1,6 @@
 #include "ZenMatineeBridgeCommandlet.h"
 
+#include "AssetToolsModule.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Engine/World.h"
