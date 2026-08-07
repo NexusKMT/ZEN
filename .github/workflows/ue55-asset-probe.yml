@@ -303,7 +303,7 @@ jobs:
 
           printf '%s' "$GHCR_TOKEN" |
             docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
-          docker pull "$UE427_IMAGE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/pull-ghcr-image.sh" "$UE427_IMAGE"
           docker image inspect "$UE427_IMAGE" --format 'UE 4.27 image ID: {{.Id}} | Size: {{.Size}} bytes'
           docker run --rm "$UE427_IMAGE" id
 
@@ -540,7 +540,7 @@ jobs:
 
           printf '%s' "$GHCR_TOKEN" |
             docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
-          docker pull "$UE55_IMAGE"
+          bash "$GITHUB_WORKSPACE/.github/scripts/pull-ghcr-image.sh" "$UE55_IMAGE"
           docker image inspect "$UE55_IMAGE" --format 'UE 5.5 image ID: {{.Id}} | Size: {{.Size}} bytes'
 
           build_version="$(docker run --rm --entrypoint /bin/cat "$UE55_IMAGE" \

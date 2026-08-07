@@ -65,6 +65,12 @@ owner-only permissions below `RUNNER_TEMP` and removed when the transfer step
 ends. The downloaded archive and expanded project remain runner-local and are
 never uploaded as GitHub artifacts.
 
+Licensed GHCR image pulls retry only when GitHub explicitly reports a
+`secondary rate limit`. In that case the workflow makes at most three attempts
+with 60-second and 120-second waits, following GitHub's minimum one-minute and
+exponential-backoff guidance. Authentication, missing-tag, and other pull
+failures are not retried.
+
 Run the asset-only verification with:
 
 ```bash
