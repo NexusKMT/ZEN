@@ -427,12 +427,13 @@ jobs:
 
               resave_status="${resave_pipeline_status[0]}"
               tee_status="${resave_pipeline_status[1]}"
+              echo "UE4Editor-Cmd ResavePackages process status: $resave_status"
               if [[ "$tee_status" != 0 ]]; then
                 echo "Failed to capture the ResavePackages log (tee status $tee_status)." >&2
                 exit "$tee_status"
               fi
-              if [[ "$resave_status" != 0 && "$resave_status" != 1 ]]; then
-                echo "ResavePackages returned unexpected status $resave_status." >&2
+              if [[ "$resave_status" != 0 ]]; then
+                echo "ResavePackages failed with process status $resave_status." >&2
                 exit "$resave_status"
               fi
 
@@ -455,15 +456,13 @@ jobs:
                 echo "ResavePackages log contains an abnormal or fatal exit marker." >&2
                 exit 22
               fi
-
-              if [[ "$resave_status" == 1 ]]; then
-                echo "Accepted UE4Editor-Cmd status 1 after verifying the complete ResavePackages success report."
-              fi
             '
 
           report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report.json"
           test -f "$report"
-          jq --exit-status '
+          jq . "$report"
+          jq --exit-status \
+            --arg known_warning "Unsupported track 'Fade'." '
             .engineVersion == "4.27.2" and
             .targetMap == "/Game/Maps/Zen_Movie" and
             .expectedActor == "MatineeActor_Movie" and
@@ -475,7 +474,7 @@ jobs:
             .conversionWarnings == 1 and
             .knownConversionWarnings == 1 and
             .unexpectedConversionWarnings == 0 and
-            .converterWarningMessages == ["Unsupported track 'Fade'."] and
+            .converterWarningMessages == [$known_warning] and
             (.generatedSequences | length) == 1 and
             .sourceTrackClasses.InterpTrackDirector > 0 and
             .sourceTrackClasses.InterpTrackFade > 0 and
@@ -495,7 +494,6 @@ jobs:
           mv "$UE427_PROJECT_DIR/Plugins/ZenMatineeBridge" "$used_plugin"
           test ! -e "$UE427_PROJECT_DIR/Plugins/ZenMatineeBridge"
 
-          cat "$report"
           du -sh "$UE427_PROJECT_DIR"
           df -hT / "$RUNNER_TEMP"
 

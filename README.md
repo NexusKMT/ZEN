@@ -48,14 +48,6 @@ decision after functional comparison. See
 [`automation/ue427/README.md`](automation/ue427/README.md) for its boundary and
 implementation rationale.
 
-The UE 4.27 Linux editor has been observed to return process status `1` after
-`ResavePackages` reports a successful commandlet result and performs a normal
-shutdown. The workflow does not ignore nonzero exits generally: it accepts only
-status `0` or `1`, and only when all 918 packages were considered and resaved,
-the commandlet reports result `0` with zero errors and warnings, a normal
-`LogExit` marker is present, and no abnormal or fatal exit marker is present.
-Any missing evidence or different status remains fatal.
-
 The workflow enforces the migration order. `run_ue_container=true` is rejected
 unless `run_ue427_bridge=true`, so UE 5.5.4 cannot be pointed at the original
 UE 4.23 input by this workflow.
