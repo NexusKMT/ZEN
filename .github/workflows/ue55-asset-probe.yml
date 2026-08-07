@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_ue427_bridge:
-        description: Convert Zen_Movie with the licensed Epic UE 4.27.2 image
+        description: Convert the Zen_Movie Matinee with the licensed Epic UE 4.27.2 image
         required: true
         type: boolean
         default: false
@@ -408,7 +408,8 @@ jobs:
 
               "$editor" "$project" \
                 -run=ZenMatineeBridge \
-                -ExpectedActor=Zen_Movie \
+                -TargetMap=/Game/Maps/Zen_Movie \
+                -ExpectedActor=MatineeActor_Movie \
                 -ExpectedMatinees=1 \
                 -unattended -nop4 -nosplash -NullRHI -NoSound \
                 -stdout -FullStdOutLogOutput -UTF8Output |
@@ -426,6 +427,9 @@ jobs:
           test -f "$report"
           jq --exit-status '
             .engineVersion == "4.27.2" and
+            .targetMap == "/Game/Maps/Zen_Movie" and
+            .expectedActor == "MatineeActor_Movie" and
+            .uniqueMatineesDiscovered == 3 and
             .matineesFound == 1 and
             .matineesConverted == 1 and
             .sourceActorsRetained == 1 and
@@ -455,6 +459,9 @@ jobs:
           df -hT / "$RUNNER_TEMP"
 
           maps_scanned="$(jq -r '.mapsScanned' "$report")"
+          matinees_discovered="$(jq -r '.uniqueMatineesDiscovered' "$report")"
+          target_map="$(jq -r '.targetMap' "$report")"
+          target_actor="$(jq -r '.expectedActor' "$report")"
           warnings="$(jq -r '.conversionWarnings' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
@@ -464,6 +471,8 @@ jobs:
             echo '| Check | Result |'
             echo '| --- | --- |'
             printf '| Maps scanned | `%s` |\n' "$maps_scanned"
+            printf '| Unique Matinee actors inventoried | `%s` |\n' "$matinees_discovered"
+            printf '| Converted target | `%s:%s` |\n' "$target_map" "$target_actor"
             echo '| Matinee actors converted | `1` |'
             echo '| Source Matinee actors retained | `1` |'
             printf '| Generated sequence | `%s` |\n' "$sequence"

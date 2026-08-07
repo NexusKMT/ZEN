@@ -11,14 +11,20 @@ from the engine image into a narrow adapter and substitutes the matching
 non-interactive `CreateAsset` call. No Unreal Engine source is copied into this
 public repository.
 
-Before saving anything, the commandlet requires the expected `Zen_Movie` actor
-and the source Director, Fade, Sound, Event, and Toggle tracks. It then requires
-the generated Sequencer asset to contain Camera Cut, Fade, Audio, Event, and
-Particle tracks before it saves anything. Any warning from Epic's converter is
-a hard failure because unsupported tracks can otherwise be dropped. The first
-bridge deliberately retains the legacy Matinee actor beside the generated
-Level Sequence so their behavior can be compared before source cleanup is
-authorized as a separate migration step.
+Before saving anything, the commandlet inventories Matinee actors across every
+map by their owning level package and object name. This prevents an actor from
+being counted twice when it is seen both in its own streaming-level map and
+through the persistent map. Conversion is deliberately scoped to
+`/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors
+observed while `Zen_P` was loaded are inventoried but not modified.
+
+The commandlet requires the target actor's Director, Fade, Sound, Event, and
+Toggle tracks, then requires the generated Sequencer asset to contain Camera
+Cut, Fade, Audio, Event, and Particle tracks before it saves anything. Any
+warning from Epic's converter is a hard failure because unsupported tracks can
+otherwise be dropped. The first bridge deliberately retains the legacy Matinee
+actor beside the generated Level Sequence so their behavior can be compared
+before source cleanup is authorized as a separate migration step.
 
 The successful command writes:
 

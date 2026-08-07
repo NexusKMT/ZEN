@@ -3,6 +3,7 @@
 #include "AssetToolsModule.h"
 #include "Dom/JsonObject.h"
 #include "Editor.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "FileHelpers.h"
@@ -14,6 +15,7 @@
 #include "Matinee/InterpTrack.h"
 #include "Matinee/MatineeActor.h"
 #include "Misc/FileHelper.h"
+#include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
 #include "MovieScene.h"
@@ -150,8 +152,10 @@ UZenMatineeBridgeCommandlet::UZenMatineeBridgeCommandlet()
 
 int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
 {
-    FString ExpectedActor = TEXT("Zen_Movie");
+    FString TargetMap = TEXT("/Game/Maps/Zen_Movie");
+    FString ExpectedActor = TEXT("MatineeActor_Movie");
     int32 ExpectedMatinees = 1;
+    FParse::Value(*Params, TEXT("TargetMap="), TargetMap);
     FParse::Value(*Params, TEXT("ExpectedActor="), ExpectedActor);
     FParse::Value(*Params, TEXT("ExpectedMatinees="), ExpectedMatinees);
 
@@ -177,6 +181,29 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         return 11;
     }
 
+    FString TargetMapFile;
+    for (const FString& MapFile : MapFiles)
+    {
+        FString MapPackage;
+        if (FPackageName::TryConvertFilenameToLongPackageName(MapFile, MapPackage) &&
+            MapPackage == TargetMap)
+        {
+            TargetMapFile = MapFile;
+            break;
+        }
+    }
+
+    if (TargetMapFile.IsEmpty())
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR target_map_not_found map=%s"),
+            *TargetMap
+        );
+        return 12;
+    }
+
     const TArray<FString> RequiredSourceTracks = {
         TEXT("InterpTrackDirector"),
         TEXT("InterpTrackFade"),
@@ -194,16 +221,20 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
 
     int32 ConvertedMaps = 0;
     int32 MatineesFound = 0;
+    int32 UniqueMatineesDiscovered = 0;
     int32 MatineesConverted = 0;
     int32 MatineesRetained = 0;
     int32 ConversionWarnings = 0;
     bool bFoundExpectedActor = false;
     TMap<FString, int32> SourceTrackCounts;
     TMap<FString, int32> SequenceTrackCounts;
+    TSet<FString> InventoriedActors;
+    TArray<TSharedPtr<FJsonValue>> MatineeInventory;
     TArray<TSharedPtr<FJsonValue>> GeneratedSequences;
 
-    // Inventory every map before creating or saving any asset. This makes an
-    // unexpected actor count or track layout a hard preflight failure.
+    // Inventory every physical actor before creating or saving any asset.
+    // Persistent maps can load the same streaming-level actor, so package and
+    // object identity are used to avoid counting it twice.
     for (const FString& MapFile : MapFiles)
     {
         UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_PREFLIGHT_MAP path=%s"), *MapFile);
@@ -224,28 +255,77 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         {
             AMatineeActor* Actor = *ActorIt;
             const FString ActorLabel = Actor->GetActorLabel();
-            MatineesFound++;
-            bFoundExpectedActor |= ActorLabel == ExpectedActor;
-            CountSourceTracks(Actor, SourceTrackCounts);
+            const FString ActorMap = Actor->GetLevel() != nullptr
+                ? Actor->GetLevel()->GetOutermost()->GetName()
+                : FString();
+            const FString ActorKey = ActorMap + TEXT(":") + Actor->GetName();
+
+            if (InventoriedActors.Contains(ActorKey))
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Display,
+                    TEXT("ZEN_BRIDGE_MATINEE_DUPLICATE loaded_map=%s source_map=%s actor=%s"),
+                    *World->GetOutermost()->GetName(),
+                    *ActorMap,
+                    *ActorLabel
+                );
+                continue;
+            }
+
+            InventoriedActors.Add(ActorKey);
+            UniqueMatineesDiscovered++;
+
+            TSharedPtr<FJsonObject> InventoryEntry = MakeShared<FJsonObject>();
+            InventoryEntry->SetStringField(TEXT("map"), ActorMap);
+            InventoryEntry->SetStringField(TEXT("actor"), ActorLabel);
+            InventoryEntry->SetStringField(TEXT("objectName"), Actor->GetName());
+            MatineeInventory.Add(MakeShared<FJsonValueObject>(InventoryEntry));
+
+            const bool bIsTargetMap = ActorMap == TargetMap;
+            const bool bIsExpectedActor = bIsTargetMap && ActorLabel == ExpectedActor;
+            if (bIsTargetMap)
+            {
+                MatineesFound++;
+            }
+            if (bIsExpectedActor)
+            {
+                bFoundExpectedActor = true;
+                CountSourceTracks(Actor, SourceTrackCounts);
+            }
 
             UE_LOG(
                 LogZenMatineeBridge,
                 Display,
-                TEXT("ZEN_BRIDGE_MATINEE_FOUND map=%s actor=%s"),
+                TEXT("ZEN_BRIDGE_MATINEE_FOUND loaded_map=%s source_map=%s actor=%s target=%d"),
                 *World->GetOutermost()->GetName(),
-                *ActorLabel
+                *ActorMap,
+                *ActorLabel,
+                bIsExpectedActor ? 1 : 0
             );
         }
     }
+
+    UE_LOG(
+        LogZenMatineeBridge,
+        Display,
+        TEXT("ZEN_BRIDGE_INVENTORY unique=%d target_map=%s target_found=%d expected_actor=%d"),
+        UniqueMatineesDiscovered,
+        *TargetMap,
+        MatineesFound,
+        bFoundExpectedActor ? 1 : 0
+    );
 
     if (MatineesFound != ExpectedMatinees || !bFoundExpectedActor)
     {
         UE_LOG(
             LogZenMatineeBridge,
             Error,
-            TEXT("ZEN_BRIDGE_ERROR preflight_count_mismatch expected=%d found=%d expected_actor=%d"),
+            TEXT("ZEN_BRIDGE_ERROR preflight_target_mismatch map=%s expected=%d found=%d actor=%s actor_found=%d"),
+            *TargetMap,
             ExpectedMatinees,
             MatineesFound,
+            *ExpectedActor,
             bFoundExpectedActor ? 1 : 0
         );
         return 14;
@@ -260,105 +340,116 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     FMatineeConverter TrackConverter;
     FMatineeToLevelSequenceConverter Converter(&TrackConverter);
 
-    for (const FString& MapFile : MapFiles)
+    UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_MAP_CONVERT path=%s"), *TargetMapFile);
+    if (!FEditorFileUtils::LoadMap(TargetMapFile, false, false))
     {
-        UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_MAP_SCAN path=%s"), *MapFile);
-        if (!FEditorFileUtils::LoadMap(MapFile, false, false))
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR map_load_failed path=%s"), *TargetMapFile);
+        return 16;
+    }
+
+    UWorld* World = GEditor->GetEditorWorldContext().World();
+    if (World == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR world_missing path=%s"), *TargetMapFile);
+        return 17;
+    }
+
+    TArray<AMatineeActor*> Actors;
+    for (TActorIterator<AMatineeActor> ActorIt(World); ActorIt; ++ActorIt)
+    {
+        AMatineeActor* Actor = *ActorIt;
+        const FString ActorMap = Actor->GetLevel() != nullptr
+            ? Actor->GetLevel()->GetOutermost()->GetName()
+            : FString();
+        if (ActorMap == TargetMap && Actor->GetActorLabel() == ExpectedActor)
         {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR map_load_failed path=%s"), *MapFile);
-            return 16;
-        }
-
-        UWorld* World = GEditor->GetEditorWorldContext().World();
-        if (World == nullptr)
-        {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR world_missing path=%s"), *MapFile);
-            return 17;
-        }
-
-        TArray<AMatineeActor*> Actors;
-        for (TActorIterator<AMatineeActor> ActorIt(World); ActorIt; ++ActorIt)
-        {
-            Actors.Add(*ActorIt);
-        }
-
-        int32 ConvertedInMap = 0;
-        for (AMatineeActor* Actor : Actors)
-        {
-            const FString ActorLabel = Actor->GetActorLabel();
-            int32 ActorWarnings = 0;
-            TWeakObjectPtr<ALevelSequenceActor> NewActor =
-                Converter.ConvertSingleMatineeToLevelSequence(Actor, ActorWarnings);
-            if (!NewActor.IsValid())
-            {
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR conversion_failed actor=%s"), *ActorLabel);
-                return 18;
-            }
-
-            // Epic warns that unsupported tracks are dropped. Reject any
-            // warning before a dirty package is saved so no lossy conversion
-            // can become accepted bridge output.
-            if (ActorWarnings != 0)
-            {
-                UE_LOG(
-                    LogZenMatineeBridge,
-                    Error,
-                    TEXT("ZEN_BRIDGE_ERROR conversion_warning actor=%s warnings=%d"),
-                    *ActorLabel,
-                    ActorWarnings
-                );
-                return 19;
-            }
-
-            ULevelSequence* Sequence = Cast<ULevelSequence>(NewActor->LevelSequence.TryLoad());
-            if (Sequence == nullptr || Sequence->GetMovieScene() == nullptr)
-            {
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR sequence_missing actor=%s"), *ActorLabel);
-                return 20;
-            }
-
-            CountSequenceTracks(Sequence->GetMovieScene(), SequenceTrackCounts);
-            if (ActorLabel == ExpectedActor &&
-                !RequireTrackClasses(SequenceTrackCounts, RequiredSequenceTracks, TEXT("sequence")))
-            {
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR required_sequence_track_missing"));
-                return 21;
-            }
-
-            const FString SequencePath = Sequence->GetPathName();
-            GeneratedSequences.Add(MakeShared<FJsonValueString>(SequencePath));
-            ConversionWarnings += ActorWarnings;
-            MatineesConverted++;
-            ConvertedInMap++;
-
-            if (!IsValid(Actor) || Actor->GetWorld() != World)
-            {
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR source_actor_not_retained actor=%s"), *ActorLabel);
-                return 22;
-            }
-            MatineesRetained++;
-
-            UE_LOG(
-                LogZenMatineeBridge,
-                Display,
-                TEXT("ZEN_BRIDGE_CONVERTED actor=%s sequence=%s warnings=%d"),
-                *ActorLabel,
-                *SequencePath,
-                ActorWarnings
-            );
-        }
-
-        if (ConvertedInMap > 0)
-        {
-            World->MarkPackageDirty();
-            if (!FEditorFileUtils::SaveDirtyPackages(false, true, true, true, false, false))
-            {
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR save_failed path=%s"), *MapFile);
-                return 23;
-            }
-            ConvertedMaps++;
+            Actors.Add(Actor);
         }
     }
+
+    if (Actors.Num() != ExpectedMatinees)
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR conversion_target_mismatch expected=%d found=%d"),
+            ExpectedMatinees,
+            Actors.Num()
+        );
+        return 18;
+    }
+
+    for (AMatineeActor* Actor : Actors)
+    {
+        const FString ActorLabel = Actor->GetActorLabel();
+        int32 ActorWarnings = 0;
+        TWeakObjectPtr<ALevelSequenceActor> NewActor =
+            Converter.ConvertSingleMatineeToLevelSequence(Actor, ActorWarnings);
+        if (!NewActor.IsValid())
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR conversion_failed actor=%s"), *ActorLabel);
+            return 19;
+        }
+
+        // Epic warns that unsupported tracks are dropped. Reject any warning
+        // before a dirty package is saved so no lossy conversion can become
+        // accepted bridge output.
+        if (ActorWarnings != 0)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR conversion_warning actor=%s warnings=%d"),
+                *ActorLabel,
+                ActorWarnings
+            );
+            return 20;
+        }
+
+        ULevelSequence* Sequence = Cast<ULevelSequence>(NewActor->LevelSequence.TryLoad());
+        if (Sequence == nullptr || Sequence->GetMovieScene() == nullptr)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR sequence_missing actor=%s"), *ActorLabel);
+            return 21;
+        }
+
+        CountSequenceTracks(Sequence->GetMovieScene(), SequenceTrackCounts);
+        if (!RequireTrackClasses(SequenceTrackCounts, RequiredSequenceTracks, TEXT("sequence")))
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR required_sequence_track_missing"));
+            return 22;
+        }
+
+        const FString SequencePath = Sequence->GetPathName();
+        GeneratedSequences.Add(MakeShared<FJsonValueString>(SequencePath));
+        ConversionWarnings += ActorWarnings;
+        MatineesConverted++;
+
+        if (!IsValid(Actor) || Actor->GetWorld() != World)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR source_actor_not_retained actor=%s"), *ActorLabel);
+            return 23;
+        }
+        MatineesRetained++;
+
+        UE_LOG(
+            LogZenMatineeBridge,
+            Display,
+            TEXT("ZEN_BRIDGE_CONVERTED map=%s actor=%s sequence=%s warnings=%d"),
+            *TargetMap,
+            *ActorLabel,
+            *SequencePath,
+            ActorWarnings
+        );
+    }
+
+    World->MarkPackageDirty();
+    if (!FEditorFileUtils::SaveDirtyPackages(false, true, true, true, false, false))
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR save_failed path=%s"), *TargetMapFile);
+        return 24;
+    }
+    ConvertedMaps = 1;
 
     if (MatineesFound != ExpectedMatinees ||
         MatineesConverted != ExpectedMatinees ||
@@ -375,19 +466,22 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             MatineesRetained,
             bFoundExpectedActor ? 1 : 0
         );
-        return 24;
+        return 25;
     }
 
     TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
     Report->SetStringField(TEXT("engineVersion"), TEXT("4.27.2"));
     Report->SetNumberField(TEXT("mapsScanned"), MapFiles.Num());
     Report->SetNumberField(TEXT("mapsConverted"), ConvertedMaps);
+    Report->SetNumberField(TEXT("uniqueMatineesDiscovered"), UniqueMatineesDiscovered);
     Report->SetNumberField(TEXT("matineesFound"), MatineesFound);
     Report->SetNumberField(TEXT("matineesConverted"), MatineesConverted);
     Report->SetNumberField(TEXT("sourceActorsRetained"), MatineesRetained);
     Report->SetNumberField(TEXT("sourceActorsRemoved"), 0);
     Report->SetNumberField(TEXT("conversionWarnings"), ConversionWarnings);
+    Report->SetStringField(TEXT("targetMap"), TargetMap);
     Report->SetStringField(TEXT("expectedActor"), ExpectedActor);
+    Report->SetArrayField(TEXT("matineeInventory"), MatineeInventory);
     Report->SetArrayField(TEXT("generatedSequences"), GeneratedSequences);
     Report->SetObjectField(TEXT("sourceTrackClasses"), CountsToJson(SourceTrackCounts));
     Report->SetObjectField(TEXT("sequenceTrackClasses"), CountsToJson(SequenceTrackCounts));
@@ -410,7 +504,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     ))
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR report_write_failed path=%s"), *ReportPath);
-        return 25;
+        return 26;
     }
 
     UE_LOG(

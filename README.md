@@ -32,8 +32,9 @@ content to this public repository. It:
 6. optionally creates a writable project copy without the stale UE 4.23 DDC,
    builds the repository's bridge commandlet with Epic's documented
    `ghcr.io/epicgames/unreal-engine:dev-4.27` image, verifies that the image
-   contains UE 4.27.2, converts `Zen_Movie`, retains the legacy Matinee actor
-   for comparison, and resaves the project with UE 4.27.2;
+   contains UE 4.27.2, inventories all Matinee actors, converts only
+   `/Game/Maps/Zen_Movie:MatineeActor_Movie`, retains that legacy actor for
+   comparison, and resaves the project with UE 4.27.2;
 7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image
    and starts a read-only probe against the completed UE 4.27 output.
 
