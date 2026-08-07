@@ -28,6 +28,13 @@ compile to Matinee delegate events, while actor literals compile to level-actor
 reference properties; those are separate migration problems and must remain
 distinguishable in the report.
 
+The report additionally captures every node and connection in each Level
+Blueprint graph that contains one of those hard references. This preserves the
+downstream event chains, function and variable identities, pin defaults, asset
+defaults, and level-Actor bindings needed to design a behavior-preserving graph
+rewrite. The workflow uploads only this JSON audit for seven days; it does not
+upload project packages or Unreal Engine content.
+
 An unconnected actor literal is still a serialized hard reference. It is
 reported and must be removed during graph cleanup even though it has no runtime
 behavior to translate.

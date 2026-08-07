@@ -460,7 +460,7 @@ jobs:
 
           report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report.json"
           test -f "$report"
-          jq . "$report"
+          jq empty "$report"
           jq --exit-status \
             --arg known_warning "Unsupported track 'Fade'." '
             def actor($map; $name):
@@ -486,6 +486,8 @@ jobs:
               unique_by(.objectPath);
             def controller($title):
               first(unique_blueprint_nodes("K2Node_MatineeController")[] | select(.title == $title));
+            def blueprint_graph($path):
+              first(.blueprintGraphs[] | select(.graphPath == $path));
             .engineVersion == "4.27.2" and
             .targetMap == "/Game/Maps/Zen_Movie" and
             .expectedActor == "MatineeActor_Movie" and
@@ -561,6 +563,35 @@ jobs:
               (.hidePlayer | type) == "boolean" and
               (.hideHud | type) == "boolean" and
               (.controllerName | type) == "string"
+            ) and
+            (.blueprintGraphs | length) == 2 and
+            all(.blueprintGraphs[];
+              (.graphPath | type) == "string" and
+              (.package | type) == "string" and
+              .nodeCount == (.nodes | length) and
+              .nodeCount > 0 and
+              all(.nodes[];
+                (.class | type) == "string" and
+                (.objectPath | type) == "string" and
+                (.title | type) == "string" and
+                (.nodeGuid | type) == "string" and
+                (.nodePosX | type) == "number" and
+                (.nodePosY | type) == "number" and
+                .pinCount == (.pins | length) and
+                all(.pins[];
+                  (.pinId | type) == "string" and
+                  (.persistentGuid | type) == "string" and
+                  .linkCount == (.links | length)
+                )
+              )
+            ) and
+            (blueprint_graph("/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.Zen_Movie.EventGraph") |
+              .package == "/Game/Maps/Zen_Movie" and
+              ([.nodes[] | select(.class == "K2Node_MatineeController")] | length) == 1
+            ) and
+            (blueprint_graph("/Game/Maps/Zen_P.Zen_P:PersistentLevel.Zen_P.EventGraph") |
+              .package == "/Game/Maps/Zen_P" and
+              ([.nodes[] | select(.class == "K2Node_MatineeController")] | length) == 2
             ) and
             (unique_blueprint_nodes("K2Node_MatineeController") | length) == 3 and
             all(unique_blueprint_nodes("K2Node_MatineeController")[];
@@ -658,6 +689,8 @@ jobs:
           literal_nodes="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .objectPath] | unique | length' "$report")"
           controller_event_links="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_MatineeController") | .blueprintNode] | unique_by(.objectPath) | [.[] | .pins[].links[]] | length' "$report")"
           literal_function_links="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .blueprintNode] | unique_by(.objectPath) | [.[] | .pins[].links[]] | length' "$report")"
+          blueprint_graphs="$(jq '.blueprintGraphs | length' "$report")"
+          blueprint_nodes="$(jq '[.blueprintGraphs[].nodes[]] | length' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -679,8 +712,19 @@ jobs:
               "$controller_nodes" "$literal_nodes"
             printf '| Controller event links / literal function links | `%s / %s` |\n' \
               "$controller_event_links" "$literal_function_links"
+            printf '| Captured Level Blueprint graphs / nodes | `%s / %s` |\n' \
+              "$blueprint_graphs" "$blueprint_nodes"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the UE 4.27 migration audit
+        if: ${{ inputs.run_ue427_bridge }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ue427-migration-audit
+          path: ${{ runner.temp }}/ue427-bridge/${{ env.PROJECT_ROOT_NAME }}/Saved/ZenMigration/ue427-bridge-report.json
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Replace UE 4.27 with the licensed UE 5.5.4 image
         if: ${{ inputs.run_ue_container }}

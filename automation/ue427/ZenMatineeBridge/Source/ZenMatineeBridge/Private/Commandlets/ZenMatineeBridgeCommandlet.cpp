@@ -14,8 +14,11 @@
 #include "LevelSequence.h"
 #include "LevelSequenceActor.h"
 #include "K2Node_CallFunction.h"
+#include "K2Node_Event.h"
 #include "K2Node_Literal.h"
+#include "K2Node_MacroInstance.h"
 #include "K2Node_MatineeController.h"
+#include "K2Node_Variable.h"
 #include "Matinee/InterpData.h"
 #include "Matinee/InterpGroup.h"
 #include "Matinee/InterpTrack.h"
@@ -212,6 +215,9 @@ void AddNodeIdentity(TSharedRef<FJsonObject> Json, UEdGraphNode* Node)
     Json->SetStringField(TEXT("objectPath"), Node->GetPathName());
     Json->SetStringField(TEXT("title"), Node->GetNodeTitle(ENodeTitleType::FullTitle).ToString());
     Json->SetStringField(TEXT("nodeGuid"), Node->NodeGuid.ToString());
+    Json->SetNumberField(TEXT("nodePosX"), Node->NodePosX);
+    Json->SetNumberField(TEXT("nodePosY"), Node->NodePosY);
+    Json->SetStringField(TEXT("nodeComment"), Node->NodeComment);
     Json->SetStringField(
         TEXT("graphPath"),
         Node->GetGraph() != nullptr ? Node->GetGraph()->GetPathName() : FString()
@@ -227,6 +233,28 @@ void AddNodeIdentity(TSharedRef<FJsonObject> Json, UEdGraphNode* Node)
                 TEXT("functionOwnerClass"),
                 TargetFunction->GetOuterUClass()->GetPathName()
             );
+        }
+    }
+
+    if (UK2Node_Event* EventNode = Cast<UK2Node_Event>(Node))
+    {
+        Json->SetStringField(TEXT("eventName"), EventNode->GetFunctionName().ToString());
+    }
+
+    if (UK2Node_Variable* VariableNode = Cast<UK2Node_Variable>(Node))
+    {
+        Json->SetStringField(TEXT("variableName"), VariableNode->GetVarName().ToString());
+        if (UClass* SourceClass = VariableNode->GetVariableSourceClass())
+        {
+            Json->SetStringField(TEXT("variableSourceClass"), SourceClass->GetPathName());
+        }
+    }
+
+    if (UK2Node_MacroInstance* MacroNode = Cast<UK2Node_MacroInstance>(Node))
+    {
+        if (UEdGraph* MacroGraph = MacroNode->GetMacroGraph())
+        {
+            Json->SetStringField(TEXT("macroGraphPath"), MacroGraph->GetPathName());
         }
     }
 }
@@ -268,6 +296,8 @@ TSharedRef<FJsonObject> CaptureBlueprintNode(UEdGraphNode* Node)
 
         TSharedPtr<FJsonObject> PinJson = MakeShared<FJsonObject>();
         PinJson->SetNumberField(TEXT("index"), PinIndex);
+        PinJson->SetStringField(TEXT("pinId"), Pin->PinId.ToString());
+        PinJson->SetStringField(TEXT("persistentGuid"), Pin->PersistentGuid.ToString());
         PinJson->SetStringField(TEXT("name"), Pin->PinName.ToString());
         PinJson->SetStringField(TEXT("direction"), PinDirectionToString(Pin->Direction));
         PinJson->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
@@ -341,9 +371,49 @@ TSharedRef<FJsonObject> CaptureBlueprintNode(UEdGraphNode* Node)
     return NodeJson;
 }
 
+TSharedRef<FJsonObject> CaptureBlueprintGraph(UEdGraph* Graph)
+{
+    struct FNodeRecord
+    {
+        FString ObjectPath;
+        TSharedPtr<FJsonObject> Json;
+    };
+
+    TArray<FNodeRecord> NodeRecords;
+    for (UEdGraphNode* Node : Graph->Nodes)
+    {
+        if (Node == nullptr)
+        {
+            continue;
+        }
+
+        FNodeRecord& Record = NodeRecords.AddDefaulted_GetRef();
+        Record.ObjectPath = Node->GetPathName();
+        Record.Json = CaptureBlueprintNode(Node);
+    }
+    NodeRecords.Sort([](const FNodeRecord& Left, const FNodeRecord& Right)
+    {
+        return Left.ObjectPath < Right.ObjectPath;
+    });
+
+    TArray<TSharedPtr<FJsonValue>> NodeValues;
+    for (const FNodeRecord& Record : NodeRecords)
+    {
+        NodeValues.Add(MakeShared<FJsonValueObject>(Record.Json));
+    }
+
+    TSharedRef<FJsonObject> GraphJson = MakeShared<FJsonObject>();
+    GraphJson->SetStringField(TEXT("graphPath"), Graph->GetPathName());
+    GraphJson->SetStringField(TEXT("package"), Graph->GetOutermost()->GetName());
+    GraphJson->SetNumberField(TEXT("nodeCount"), NodeValues.Num());
+    GraphJson->SetArrayField(TEXT("nodes"), NodeValues);
+    return GraphJson;
+}
+
 TSharedRef<FJsonObject> CaptureReferenceContext(
     AMatineeActor* Actor,
-    const FString& LoadedMap
+    const FString& LoadedMap,
+    TMap<FString, TSharedPtr<FJsonObject>>& BlueprintGraphsByPath
 )
 {
     struct FReferencerRecord
@@ -383,6 +453,22 @@ TSharedRef<FJsonObject> CaptureReferenceContext(
         if (UEdGraphNode* GraphNode = Cast<UEdGraphNode>(Referencer))
         {
             Record.BlueprintNode = CaptureBlueprintNode(GraphNode);
+            if (UEdGraph* Graph = GraphNode->GetGraph())
+            {
+                const FString GraphPath = Graph->GetPathName();
+                if (!BlueprintGraphsByPath.Contains(GraphPath))
+                {
+                    TSharedPtr<FJsonObject> GraphJson = CaptureBlueprintGraph(Graph);
+                    UE_LOG(
+                        LogZenMatineeBridge,
+                        Display,
+                        TEXT("ZEN_BRIDGE_BLUEPRINT_GRAPH path=%s nodes=%d"),
+                        *GraphPath,
+                        GraphJson->GetIntegerField(TEXT("nodeCount"))
+                    );
+                    BlueprintGraphsByPath.Add(GraphPath, GraphJson);
+                }
+            }
         }
     }
     Records.Sort([](const FReferencerRecord& Left, const FReferencerRecord& Right)
@@ -533,6 +619,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     TSet<FString> InventoriedActors;
     TMap<FString, TSharedPtr<FJsonObject>> InventoryEntriesByActor;
     TMap<FString, TArray<TSharedPtr<FJsonValue>>> ReferenceContextsByActor;
+    TMap<FString, TSharedPtr<FJsonObject>> BlueprintGraphsByPath;
     TArray<TSharedPtr<FJsonValue>> MatineeInventory;
     TArray<TSharedPtr<FJsonValue>> ConverterWarningMessages;
     TArray<TSharedPtr<FJsonValue>> GeneratedSequences;
@@ -568,7 +655,11 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             const bool bFirstEncounter = !InventoriedActors.Contains(ActorKey);
 
             ReferenceContextsByActor.FindOrAdd(ActorKey).Add(
-                MakeShared<FJsonValueObject>(CaptureReferenceContext(Actor, LoadedMap))
+                MakeShared<FJsonValueObject>(CaptureReferenceContext(
+                    Actor,
+                    LoadedMap,
+                    BlueprintGraphsByPath
+                ))
             );
 
             if (!bFirstEncounter)
@@ -878,6 +969,15 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         return 28;
     }
 
+    TArray<FString> BlueprintGraphPaths;
+    BlueprintGraphsByPath.GetKeys(BlueprintGraphPaths);
+    BlueprintGraphPaths.Sort();
+    TArray<TSharedPtr<FJsonValue>> BlueprintGraphs;
+    for (const FString& GraphPath : BlueprintGraphPaths)
+    {
+        BlueprintGraphs.Add(MakeShared<FJsonValueObject>(BlueprintGraphsByPath.FindChecked(GraphPath)));
+    }
+
     TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
     Report->SetStringField(TEXT("engineVersion"), TEXT("4.27.2"));
     Report->SetNumberField(TEXT("mapsScanned"), MapFiles.Num());
@@ -893,6 +993,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     Report->SetStringField(TEXT("targetMap"), TargetMap);
     Report->SetStringField(TEXT("expectedActor"), ExpectedActor);
     Report->SetArrayField(TEXT("matineeInventory"), MatineeInventory);
+    Report->SetArrayField(TEXT("blueprintGraphs"), BlueprintGraphs);
     Report->SetArrayField(TEXT("converterWarningMessages"), ConverterWarningMessages);
     Report->SetArrayField(TEXT("generatedSequences"), GeneratedSequences);
     Report->SetObjectField(TEXT("sourceTrackClasses"), CountsToJson(SourceTrackCounts));
