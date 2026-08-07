@@ -21,6 +21,13 @@ hard referencer found by UE 4.27's `FReferencerFinder` with inner-object
 references excluded. This is a deletion preflight, not proof that a reference
 can be rewritten automatically.
 
+For referenced `K2Node_MatineeController` and `K2Node_Literal` objects, the
+audit also serializes the containing graph, node GUID and title, every pin's
+type/direction/default, and every direct pin connection. Controller output pins
+compile to Matinee delegate events, while actor literals compile to level-actor
+reference properties; those are separate migration problems and must remain
+distinguishable in the report.
+
 Conversion is deliberately scoped to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors
 observed while `Zen_P` was loaded are inventoried but not modified.

@@ -477,6 +477,13 @@ jobs:
                   .insideSourceActor == false
                 )
               );
+            def unique_blueprint_nodes($class):
+              [
+                .matineeInventory[].referenceContexts[].referencers[] |
+                select(.class == $class) |
+                .blueprintNode
+              ] |
+              unique_by(.objectPath);
             .engineVersion == "4.27.2" and
             .targetMap == "/Game/Maps/Zen_Movie" and
             .expectedActor == "MatineeActor_Movie" and
@@ -553,6 +560,28 @@ jobs:
               (.hideHud | type) == "boolean" and
               (.controllerName | type) == "string"
             ) and
+            (unique_blueprint_nodes("K2Node_MatineeController") | length) == 3 and
+            all(unique_blueprint_nodes("K2Node_MatineeController")[];
+              .semantic == "matineeEventController" and
+              (.referencedObject | length) > 0 and
+              .pinCount == (.pins | length) and
+              .pinCount >= 2 and
+              all(.pins[];
+                .direction == "output" and
+                .category == "exec" and
+                .linkCount == (.links | length)
+              )
+            ) and
+            (unique_blueprint_nodes("K2Node_Literal") | length) == 7 and
+            all(unique_blueprint_nodes("K2Node_Literal")[];
+              .semantic == "levelActorLiteral" and
+              (.referencedObject | length) > 0 and
+              .pinCount == 1 and
+              .pins[0].direction == "output" and
+              .pins[0].category == "object" and
+              .pins[0].linkCount == (.pins[0].links | length) and
+              .pins[0].linkCount >= 1
+            ) and
             .sourceTrackClasses.InterpTrackDirector > 0 and
             .sourceTrackClasses.InterpTrackFade > 0 and
             .sourceTrackClasses.InterpTrackSound > 0 and
@@ -583,6 +612,8 @@ jobs:
           unexpected_warnings="$(jq -r '.unexpectedConversionWarnings' "$report")"
           reference_contexts="$(jq '[.matineeInventory[].referenceContexts[]] | length' "$report")"
           referencers="$(jq '[.matineeInventory[].referenceContexts[].referencers[]] | length' "$report")"
+          controller_nodes="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_MatineeController") | .objectPath] | unique | length' "$report")"
+          literal_nodes="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .objectPath] | unique | length' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -600,6 +631,8 @@ jobs:
               "$warnings" "$known_warnings" "$unexpected_warnings"
             printf '| Matinee reference contexts / hard referencers | `%s / %s` |\n' \
               "$reference_contexts" "$referencers"
+            printf '| Blueprint Matinee controllers / actor literals | `%s / %s` |\n' \
+              "$controller_nodes" "$literal_nodes"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
