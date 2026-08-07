@@ -1,17 +1,21 @@
-name: UE 5.5.4 asset probe
+name: UE 4.27 to 5.5.4 migration probe
 
 on:
   workflow_dispatch:
     inputs:
+      run_ue427_bridge:
+        description: Convert Zen_Movie with the licensed Epic UE 4.27.2 image
+        required: true
+        type: boolean
+        default: false
       run_ue_container:
-        description: Pull the licensed Epic UE 5.5.4 image and run a read-only probe
+        description: Probe UE 5.5.4 against the completed UE 4.27 bridge output
         required: true
         type: boolean
         default: false
 
 permissions:
   contents: read
-  packages: read
 
 concurrency:
   group: ue55-asset-probe
@@ -27,17 +31,25 @@ env:
   PROJECT_ROOT_NAME: EpicZenGarden
   RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
-  UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+  UE427_IMAGE: ghcr.io/epicgames/unreal-engine:dev-4.27
+  UE55_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
 
 jobs:
   probe:
     name: Retrieve, verify, and inspect
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
       - name: Check out the public harness
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Enforce the migration order
+        if: ${{ inputs.run_ue_container && !inputs.run_ue427_bridge }}
+        shell: bash
+        run: |
+          echo '::error::UE 5.5.4 validation requires run_ue427_bridge=true; direct UE 4.23 to UE 5.5.4 is forbidden.'
+          exit 1
 
       - name: Report initial runner capacity
         shell: bash
@@ -271,8 +283,8 @@ jobs:
             printf '| Extracted logical bytes | `%s` |\n' "$actual_bytes"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Pull the licensed UE 5.5.4 image
-        if: ${{ inputs.run_ue_container }}
+      - name: Pull the licensed Epic engine images
+        if: ${{ inputs.run_ue427_bridge }}
         shell: bash
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
@@ -280,7 +292,7 @@ jobs:
           set -euo pipefail
 
           test -n "$GHCR_TOKEN" || {
-            echo '::error::run_ue_container requires the repository secret GHCR_TOKEN with read:packages access.'
+            echo '::error::Engine stages require GHCR_TOKEN with read:packages and Epic Unreal Engine access.'
             exit 1
           }
 
@@ -291,8 +303,207 @@ jobs:
 
           printf '%s' "$GHCR_TOKEN" |
             docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
-          docker pull "$UE_IMAGE"
-          docker image inspect "$UE_IMAGE" --format 'Image ID: {{.Id}} | Size: {{.Size}} bytes'
+          docker pull "$UE427_IMAGE"
+          docker image inspect "$UE427_IMAGE" --format 'UE 4.27 image ID: {{.Id}} | Size: {{.Size}} bytes'
+          docker run --rm "$UE427_IMAGE" id
+
+          build_version="$(docker run --rm --entrypoint /bin/cat "$UE427_IMAGE" \
+            /home/ue4/UnrealEngine/Engine/Build/Build.version)"
+          printf '%s\n' "$build_version" | jq --exit-status '
+            .MajorVersion == 4 and
+            .MinorVersion == 27 and
+            .PatchVersion == 2
+          ' >/dev/null || {
+            echo '::error::Epic dev-4.27 did not contain the required UE 4.27.2 engine.'
+            printf '%s\n' "$build_version"
+            exit 1
+          }
+          echo 'Verified Epic image engine version: 4.27.2'
+          df -hT / "$RUNNER_TEMP"
+
+      - name: Create the writable UE 4.27 bridge copy
+        if: ${{ inputs.run_ue427_bridge }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bridge_root="$RUNNER_TEMP/ue427-bridge"
+          bridge_project="$bridge_root/$PROJECT_ROOT_NAME"
+          mkdir -p "$bridge_project"
+
+          # DDC is verified as part of the source archive but is deliberately
+          # excluded from the writable migration copy so 4.27 rebuilds it.
+          tar --directory "$PROJECT_DIR" \
+            --exclude='./DerivedDataCache' \
+            --create --file=- . |
+            tar --directory "$bridge_project" --extract --file=-
+          chmod -R a+rwX "$bridge_project"
+
+          test -f "$bridge_project/EpicZenGarden.uproject"
+          test -d "$bridge_project/Content"
+          if test -e "$bridge_project/DerivedDataCache"; then
+            echo '::error::The UE 4.27 bridge copy unexpectedly contains the UE 4.23 DDC.'
+            exit 1
+          fi
+
+          printf 'UE427_PROJECT_DIR=%s\n' "$bridge_project" >> "$GITHUB_ENV"
+          printf 'Created writable bridge copy at %s.\n' "$bridge_project"
+          du -sh "$bridge_project"
+          df -hT / "$RUNNER_TEMP"
+
+      - name: Build and install the UE 4.27 Matinee bridge
+        if: ${{ inputs.run_ue427_bridge }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          package_dir="$RUNNER_TEMP/zen-matinee-bridge-package"
+          project_plugin_dir="$UE427_PROJECT_DIR/Plugins/ZenMatineeBridge"
+          mkdir -p "$package_dir"
+          chmod 0777 "$package_dir"
+
+          docker run --rm \
+            --mount "type=bind,src=${GITHUB_WORKSPACE},dst=/workspace/harness,readonly" \
+            --mount "type=bind,src=${package_dir},dst=/workspace/package" \
+            "$UE427_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              /home/ue4/UnrealEngine/Engine/Build/BatchFiles/RunUAT.sh BuildPlugin \
+                -Plugin=/workspace/harness/automation/ue427/ZenMatineeBridge/ZenMatineeBridge.uplugin \
+                -Package=/workspace/package \
+                -NoTargetPlatforms
+            '
+
+          test -f "$package_dir/ZenMatineeBridge.uplugin"
+          # BuildPlugin rewrites the descriptor for binary distribution. This
+          # is a project plugin, so restore the reviewed descriptor that keeps
+          # it enabled while the bridge commandlet is in use.
+          cp -f \
+            "$GITHUB_WORKSPACE/automation/ue427/ZenMatineeBridge/ZenMatineeBridge.uplugin" \
+            "$package_dir/ZenMatineeBridge.uplugin"
+          mkdir -p "$project_plugin_dir"
+          cp -R "$package_dir/." "$project_plugin_dir/"
+          test -d "$project_plugin_dir/Binaries/Linux"
+          test -f "$project_plugin_dir/ZenMatineeBridge.uplugin"
+          echo 'Installed the compiled bridge into the writable UE 4.27 project copy.'
+
+      - name: Convert Matinee and resave with UE 4.27.2
+        if: ${{ inputs.run_ue427_bridge }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          log_dir="$RUNNER_TEMP/ue427-logs"
+          mkdir -p "$log_dir"
+          chmod 0777 "$log_dir"
+
+          docker run --rm \
+            --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden" \
+            --mount "type=bind,src=${log_dir},dst=/workspace/logs" \
+            "$UE427_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              editor=/home/ue4/UnrealEngine/Engine/Binaries/Linux/UE4Editor-Cmd
+              project=/workspace/EpicZenGarden/EpicZenGarden.uproject
+
+              "$editor" "$project" \
+                -run=ZenMatineeBridge \
+                -ExpectedActor=Zen_Movie \
+                -ExpectedMatinees=1 \
+                -unattended -nop4 -nosplash -NullRHI -NoSound \
+                -stdout -FullStdOutLogOutput -UTF8Output |
+                tee /workspace/logs/matinee-conversion.log
+
+              "$editor" "$project" \
+                -run=ResavePackages \
+                -ProjectOnly -IgnoreChangelist \
+                -unattended -nop4 -NullRHI -NoSound \
+                -stdout -FullStdOutLogOutput -UTF8Output |
+                tee /workspace/logs/resave-packages.log
+            '
+
+          report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report.json"
+          test -f "$report"
+          jq --exit-status '
+            .engineVersion == "4.27.2" and
+            .matineesFound == 1 and
+            .matineesConverted == 1 and
+            .sourceActorsRetained == 1 and
+            .sourceActorsRemoved == 0 and
+            .conversionWarnings == 0 and
+            (.generatedSequences | length) == 1 and
+            .sourceTrackClasses.InterpTrackDirector > 0 and
+            .sourceTrackClasses.InterpTrackFade > 0 and
+            .sourceTrackClasses.InterpTrackSound > 0 and
+            .sourceTrackClasses.InterpTrackEvent > 0 and
+            .sourceTrackClasses.InterpTrackToggle > 0 and
+            .sequenceTrackClasses.MovieSceneCameraCutTrack > 0 and
+            .sequenceTrackClasses.MovieSceneFadeTrack > 0 and
+            .sequenceTrackClasses.MovieSceneAudioTrack > 0 and
+            .sequenceTrackClasses.MovieSceneEventTrack > 0 and
+            .sequenceTrackClasses.MovieSceneParticleTrack > 0
+          ' "$report" >/dev/null
+
+          # The adapter is only valid in UE 4.27 and must not follow the
+          # converted project into UE 5.5.4.
+          used_plugin="$RUNNER_TEMP/ZenMatineeBridge-used"
+          mv "$UE427_PROJECT_DIR/Plugins/ZenMatineeBridge" "$used_plugin"
+          test ! -e "$UE427_PROJECT_DIR/Plugins/ZenMatineeBridge"
+
+          cat "$report"
+          du -sh "$UE427_PROJECT_DIR"
+          df -hT / "$RUNNER_TEMP"
+
+          maps_scanned="$(jq -r '.mapsScanned' "$report")"
+          warnings="$(jq -r '.conversionWarnings' "$report")"
+          sequence="$(jq -r '.generatedSequences[0]' "$report")"
+          {
+            echo
+            echo '## UE 4.27.2 bridge'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            printf '| Maps scanned | `%s` |\n' "$maps_scanned"
+            echo '| Matinee actors converted | `1` |'
+            echo '| Source Matinee actors retained | `1` |'
+            printf '| Generated sequence | `%s` |\n' "$sequence"
+            printf '| Conversion warnings | `%s` |\n' "$warnings"
+            echo '| Required source and Sequencer tracks | `verified` |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Replace UE 4.27 with the licensed UE 5.5.4 image
+        if: ${{ inputs.run_ue_container }}
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cleanup_login() {
+            docker logout ghcr.io >/dev/null 2>&1 || true
+          }
+          trap cleanup_login EXIT
+
+          docker image rm "$UE427_IMAGE"
+          df -hT / "$RUNNER_TEMP"
+
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+          docker pull "$UE55_IMAGE"
+          docker image inspect "$UE55_IMAGE" --format 'UE 5.5 image ID: {{.Id}} | Size: {{.Size}} bytes'
+
+          build_version="$(docker run --rm --entrypoint /bin/cat "$UE55_IMAGE" \
+            /home/ue4/UnrealEngine/Engine/Build/Build.version)"
+          printf '%s\n' "$build_version" | jq --exit-status '
+            .MajorVersion == 5 and
+            .MinorVersion == 5 and
+            .PatchVersion == 4
+          ' >/dev/null || {
+            echo '::error::The selected Epic image did not contain the required UE 5.5.4 engine.'
+            printf '%s\n' "$build_version"
+            exit 1
+          }
+          echo 'Verified Epic image engine version: 5.5.4'
           df -hT / "$RUNNER_TEMP"
 
       - name: Probe UE 5.5.4 with the project mounted read-only
@@ -303,9 +514,8 @@ jobs:
 
           version_log="$RUNNER_TEMP/ue-version.log"
           if ! timeout 120s docker run --rm \
-            --user 0:0 \
-            --mount "type=bind,src=${PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
-            "$UE_IMAGE" \
+            --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
+            "$UE55_IMAGE" \
             bash -lc '
               set -euo pipefail
               test -r /workspace/EpicZenGarden/EpicZenGarden.uproject
@@ -330,5 +540,5 @@ jobs:
             echo
             echo '## UE container probe'
             echo
-            printf 'Validated `%s` with the project mounted read-only.\n' "$UE_IMAGE"
+            printf 'Validated `%s` against the UE 4.27 bridge output mounted read-only.\n' "$UE55_IMAGE"
           } >> "$GITHUB_STEP_SUMMARY"

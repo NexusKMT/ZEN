@@ -13,10 +13,11 @@ The repository intentionally does not contain:
 Authorized workflows will obtain the project archive at runtime. Repository
 secrets are used only to create temporary runner-local configuration.
 
-## UE 5.5.4 asset workflow
+## UE 4.27 to 5.5.4 migration workflow
 
-The manually dispatched `UE 5.5.4 asset probe` workflow stages the clean Zen
-Garden project without adding licensed content to this public repository. It:
+The manually dispatched `UE 4.27 to 5.5.4 migration probe` workflow stages and
+optionally converts the clean Zen Garden project without adding licensed
+content to this public repository. It:
 
 1. reclaims the preinstalled runner payload with the same pinned
    `jlumbroso/free-disk-space` action validated by the disk-probe repository;
@@ -28,19 +29,32 @@ Garden project without adding licensed content to this public repository. It:
    SHA-256 sidecar, the local SHA-256, and the expected archive length;
 5. rejects paths or symbolic links that could escape the extraction root, then
    verifies the expanded project's file count and logical byte count;
-6. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image
-   and starts the editor version probe with the project mounted read-only.
+6. optionally creates a writable project copy without the stale UE 4.23 DDC,
+   builds the repository's bridge commandlet with Epic's documented
+   `ghcr.io/epicgames/unreal-engine:dev-4.27` image, verifies that the image
+   contains UE 4.27.2, converts `Zen_Movie`, retains the legacy Matinee actor
+   for comparison, and resaves the project with UE 4.27.2;
+7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image
+   and starts a read-only probe against the completed UE 4.27 output.
 
-The optional container stage is deliberately non-destructive. It does not
-convert the UE 4.23 project or save it with UE 5.5.4. The UE 4.27 bridge and
-Matinee-to-Sequencer conversion remain separate migration work.
+The original expanded UE 4.23 project is always retained unchanged. The bridge
+commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
+tracks before conversion and the resulting Camera Cut, Fade, Audio, Event, and
+Particle tracks before it saves anything. Converter warnings are fatal. Source
+Matinee cleanup remains a separate audited decision after functional
+comparison. See [`automation/ue427/README.md`](automation/ue427/README.md) for
+its boundary and implementation rationale.
+
+The workflow enforces the migration order. `run_ue_container=true` is rejected
+unless `run_ue427_bridge=true`, so UE 5.5.4 cannot be pointed at the original
+UE 4.23 input by this workflow.
 
 ### Required repository secrets
 
 | Secret | Used for |
 | --- | --- |
 | `RCLONE_CONFIG` | Complete rclone configuration containing exactly one remote. Required for every run. |
-| `GHCR_TOKEN` | Classic GitHub PAT belonging to the repository owner, with `read:packages` and Epic Unreal Engine access. Required only when `run_ue_container` is enabled. |
+| `GHCR_TOKEN` | Classic GitHub PAT belonging to the repository owner, with `read:packages` and Epic Unreal Engine access. Required for either engine stage. |
 
 The workflow is `workflow_dispatch` only, so pull requests and forks cannot
 cause cloud downloads or receive secrets. The rclone config is written with
@@ -53,11 +67,29 @@ Run the asset-only verification with:
 ```bash
 gh workflow run ue55-asset-probe.yml \
   --repo NexusKMT/ZEN \
+  --field run_ue427_bridge=false \
   --field run_ue_container=false
 ```
 
-After configuring `GHCR_TOKEN`, set `run_ue_container=true` to include the
-official UE 5.5.4 image probe.
+After configuring `GHCR_TOKEN`, run the UE 4.27 conversion with:
+
+```bash
+gh workflow run ue55-asset-probe.yml \
+  --repo NexusKMT/ZEN \
+  --field run_ue427_bridge=true \
+  --field run_ue_container=false
+```
+
+Set both inputs to `true` to pull UE 5.5.4, verify its embedded engine version,
+and run only an image/read-only-mount probe against the UE 4.27 bridge output.
+This step does not open or save the converted project with UE 5.5.4. Engine-stage
+outputs remain runner-local and are not uploaded to GitHub artifacts or written
+back to OneDrive.
+
+Epic's public container documentation does not enumerate private patch tags.
+The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must
+succeed after licensed GHCR authentication, and `Engine/Build/Build.version`
+must report exactly 5.5.4 before the image is accepted.
 
 ## Upstream references
 
