@@ -33,7 +33,6 @@ public class ZenMatineeBridge : ModuleRules
             {
                 "Analytics",
                 "AssetRegistry",
-                "AssetTools",
                 "BlueprintGraph",
                 "ContentBrowser",
                 "Core",
