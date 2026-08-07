@@ -1,0 +1,334 @@
+name: UE 5.5.4 asset probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_ue_container:
+        description: Pull the licensed Epic UE 5.5.4 image and run a read-only probe
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: ue55-asset-probe
+  cancel-in-progress: false
+
+env:
+  ARCHIVE_NAME: EpicZenGarden-clean-project-20260807.zip
+  ARCHIVE_BYTES: "2171159058"
+  ARCHIVE_SHA256: 62f39841ebf78ba3e56d67fb25789af9e43d7feccd1705eea326634a6dccf2d2
+  ARCHIVE_QUICKXOR: 164b5e3643c008b994ab85599f5184709cfe2c52
+  EXTRACTED_FILES: "960"
+  EXTRACTED_BYTES: "2255274451"
+  PROJECT_ROOT_NAME: EpicZenGarden
+  RCLONE_VERSION: "1.75.0"
+  RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+  UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+
+jobs:
+  probe:
+    name: Retrieve, verify, and inspect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the public harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Report initial runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -hT / "$RUNNER_TEMP"
+
+      - name: Reclaim preinstalled runner space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          tool-cache: true
+          swap-storage: true
+
+      - name: Report reclaimed runner capacity
+        shell: bash
+        run: |
+          set -euo pipefail
+          df -hT / "$RUNNER_TEMP"
+          docker system df
+
+      - name: Install pinned rclone
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tool_dir="$RUNNER_TEMP/rclone-tool"
+          bundle="$tool_dir/rclone.zip"
+          mkdir -p "$tool_dir"
+
+          curl --fail --location --silent --show-error --retry 5 \
+            --output "$bundle" \
+            "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+          printf '%s  %s\n' "$RCLONE_BUNDLE_SHA256" "$bundle" | sha256sum --check --status
+          unzip -q "$bundle" -d "$tool_dir"
+
+          rclone_bin="$(find "$tool_dir" -type f -name rclone -print -quit)"
+          test -n "$rclone_bin"
+          chmod 0755 "$rclone_bin"
+          version_line="$("$rclone_bin" version | sed -n '1p')"
+          test "$version_line" = "rclone v${RCLONE_VERSION}"
+
+          printf 'RCLONE_BIN=%s\n' "$rclone_bin" >> "$GITHUB_ENV"
+          printf 'Installed %s\n' "$version_line"
+
+      - name: Retrieve and verify the cloud archive
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+
+          config_dir="$RUNNER_TEMP/rclone-config"
+          config_file="$config_dir/rclone.conf"
+          download_dir="$RUNNER_TEMP/zen-download"
+          transfer_log="$RUNNER_TEMP/rclone-transfer.log"
+
+          cleanup_config() {
+            if test -f "$config_file"; then
+              shred --remove "$config_file" 2>/dev/null || rm -f "$config_file"
+            fi
+          }
+          trap cleanup_config EXIT
+
+          test -n "$RCLONE_CONFIG_CONTENT" || {
+            echo '::error::Repository secret RCLONE_CONFIG is empty or unavailable.'
+            exit 1
+          }
+
+          umask 077
+          mkdir -p "$config_dir" "$download_dir"
+          printf '%s' "$RCLONE_CONFIG_CONTENT" > "$config_file"
+
+          remote_count="$("$RCLONE_BIN" listremotes --config "$config_file" | awk 'NF { count++ } END { print count + 0 }')"
+          test "$remote_count" = 1 || {
+            echo "::error::RCLONE_CONFIG must define exactly one remote; found ${remote_count}."
+            exit 1
+          }
+
+          remote_name="$("$RCLONE_BIN" listremotes --config "$config_file")"
+          remote_name="${remote_name//$'\r'/}"
+          remote_name="${remote_name//$'\n'/}"
+          test -n "$remote_name"
+          cloud_root="${remote_name}ZEN"
+
+          download_one() {
+            local filename="$1"
+            if ! "$RCLONE_BIN" copyto \
+              --config "$config_file" \
+              --retries 3 \
+              --low-level-retries 10 \
+              --stats 30s \
+              --log-file "$transfer_log" \
+              "${cloud_root}/${filename}" \
+              "${download_dir}/${filename}"
+            then
+              echo "::error::rclone failed while retrieving ${filename}; the remote name is intentionally suppressed."
+              exit 1
+            fi
+          }
+
+          download_one "$ARCHIVE_NAME"
+          download_one "${ARCHIVE_NAME}.sha256"
+          download_one archive-metadata.txt
+
+          archive_path="$download_dir/$ARCHIVE_NAME"
+          actual_bytes="$(stat --format='%s' "$archive_path")"
+          test "$actual_bytes" = "$ARCHIVE_BYTES" || {
+            echo "::error::Archive length mismatch: expected ${ARCHIVE_BYTES}, got ${actual_bytes}."
+            exit 1
+          }
+
+          if ! remote_quickxor="$(
+            "$RCLONE_BIN" hashsum QuickXorHash \
+              --config "$config_file" \
+              "${cloud_root}/${ARCHIVE_NAME}" 2>> "$transfer_log" |
+              awk 'NR == 1 { print tolower($1) }'
+          )"
+          then
+            echo '::error::Could not read the server-side QuickXorHash; the remote name is intentionally suppressed.'
+            exit 1
+          fi
+          local_quickxor="$(
+            "$RCLONE_BIN" hashsum QuickXorHash "$archive_path" |
+              awk 'NR == 1 { print tolower($1) }'
+          )"
+          test "$remote_quickxor" = "$ARCHIVE_QUICKXOR" || {
+            echo '::error::The OneDrive server-side QuickXorHash does not match the pinned archive.'
+            exit 1
+          }
+          test "$local_quickxor" = "$remote_quickxor" || {
+            echo '::error::The downloaded archive does not match the OneDrive QuickXorHash.'
+            exit 1
+          }
+
+          sidecar_path="${archive_path}.sha256"
+          sidecar_sha256="$(awk 'NR == 1 { print tolower($1) } END { if (NR != 1) exit 1 }' "$sidecar_path")"
+          [[ "$sidecar_sha256" =~ ^[0-9a-f]{64}$ ]]
+          test "$sidecar_sha256" = "$ARCHIVE_SHA256" || {
+            echo '::error::The cloud SHA-256 sidecar does not contain the pinned digest.'
+            exit 1
+          }
+
+          actual_sha256="$(sha256sum "$archive_path" | awk '{ print tolower($1) }')"
+          test "$actual_sha256" = "$sidecar_sha256" || {
+            echo '::error::The downloaded archive failed SHA-256 verification.'
+            exit 1
+          }
+
+          printf 'Verified %s (%s bytes).\n' "$ARCHIVE_NAME" "$actual_bytes"
+          printf 'QuickXorHash: %s\nSHA-256: %s\n' "$local_quickxor" "$actual_sha256"
+
+          printf 'DOWNLOAD_DIR=%s\n' "$download_dir" >> "$GITHUB_ENV"
+
+      - name: Validate and extract the project
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          archive_path="$DOWNLOAD_DIR/$ARCHIVE_NAME"
+          extract_dir="$RUNNER_TEMP/zen-project"
+          entry_list="$RUNNER_TEMP/zen-archive-entries.txt"
+          mkdir -p "$extract_dir"
+
+          zipinfo -1 "$archive_path" > "$entry_list"
+          test -s "$entry_list"
+
+          if ! awk -v root="${PROJECT_ROOT_NAME}/" '
+            index($0, root) != 1 { exit 1 }
+            $0 ~ /(^|\/)\.\.(\/|$)/ { exit 1 }
+            $0 ~ /^\// { exit 1 }
+            index($0, "\\") != 0 { exit 1 }
+          ' "$entry_list"
+          then
+            echo '::error::The ZIP contains a path outside the expected EpicZenGarden root.'
+            exit 1
+          fi
+
+          if ! zipinfo -l "$archive_path" | awk '$1 ~ /^l/ { found = 1 } END { exit found }'
+          then
+            echo '::error::The ZIP contains a symbolic-link entry.'
+            exit 1
+          fi
+
+          unzip -q "$archive_path" -d "$extract_dir"
+          project_dir="$extract_dir/$PROJECT_ROOT_NAME"
+
+          test -d "$project_dir/Build"
+          test -d "$project_dir/Config"
+          test -d "$project_dir/Content"
+          test -f "$project_dir/EpicZenGarden.uproject"
+
+          mapfile -d '' project_files < <(find "$extract_dir" -type f -name '*.uproject' -print0)
+          test "${#project_files[@]}" = 1
+          test "${project_files[0]}" = "$project_dir/EpicZenGarden.uproject"
+
+          if find "$extract_dir" -type l -print -quit | grep -q .; then
+            echo '::error::The extracted project contains a symbolic link.'
+            exit 1
+          fi
+
+          actual_files="$(find "$project_dir" -type f -printf '\n' | wc -l | tr -d ' ')"
+          actual_bytes="$(find "$project_dir" -type f -printf '%s\n' | awk '{ total += $1 } END { printf "%.0f", total }')"
+          test "$actual_files" = "$EXTRACTED_FILES" || {
+            echo "::error::Extracted file count mismatch: expected ${EXTRACTED_FILES}, got ${actual_files}."
+            exit 1
+          }
+          test "$actual_bytes" = "$EXTRACTED_BYTES" || {
+            echo "::error::Extracted byte count mismatch: expected ${EXTRACTED_BYTES}, got ${actual_bytes}."
+            exit 1
+          }
+
+          printf 'PROJECT_DIR=%s\n' "$project_dir" >> "$GITHUB_ENV"
+          printf 'Extracted %s files (%s logical bytes).\n' "$actual_files" "$actual_bytes"
+          du -sh "$project_dir"
+          df -hT / "$RUNNER_TEMP"
+
+          {
+            echo '## Zen Garden asset verification'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            printf '| Archive bytes | `%s` |\n' "$ARCHIVE_BYTES"
+            printf '| QuickXorHash | `%s` |\n' "$ARCHIVE_QUICKXOR"
+            printf '| SHA-256 | `%s` |\n' "$ARCHIVE_SHA256"
+            printf '| Extracted files | `%s` |\n' "$actual_files"
+            printf '| Extracted logical bytes | `%s` |\n' "$actual_bytes"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull the licensed UE 5.5.4 image
+        if: ${{ inputs.run_ue_container }}
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          test -n "$GHCR_TOKEN" || {
+            echo '::error::run_ue_container requires the repository secret GHCR_TOKEN with read:packages access.'
+            exit 1
+          }
+
+          cleanup_login() {
+            docker logout ghcr.io >/dev/null 2>&1 || true
+          }
+          trap cleanup_login EXIT
+
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+          docker pull "$UE_IMAGE"
+          docker image inspect "$UE_IMAGE" --format 'Image ID: {{.Id}} | Size: {{.Size}} bytes'
+          df -hT / "$RUNNER_TEMP"
+
+      - name: Probe UE 5.5.4 with the project mounted read-only
+        if: ${{ inputs.run_ue_container }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version_log="$RUNNER_TEMP/ue-version.log"
+          if ! timeout 120s docker run --rm \
+            --user 0:0 \
+            --mount "type=bind,src=${PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
+            "$UE_IMAGE" \
+            bash -lc '
+              set -euo pipefail
+              test -r /workspace/EpicZenGarden/EpicZenGarden.uproject
+              test -d /workspace/EpicZenGarden/Content
+              if touch /workspace/EpicZenGarden/.write-probe 2>/dev/null; then
+                echo "Project mount unexpectedly accepted a write." >&2
+                exit 1
+              fi
+              /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor -version
+            ' > "$version_log" 2>&1
+          then
+            cat "$version_log"
+            echo '::error::The UE 5.5.4 container probe failed.'
+            exit 1
+          fi
+
+          cat "$version_log"
+          grep -F '5.5.4' "$version_log"
+          echo 'UE 5.5.4 started successfully and the Zen Garden project mount remained read-only.'
+
+          {
+            echo
+            echo '## UE container probe'
+            echo
+            printf 'Validated `%s` with the project mounted read-only.\n' "$UE_IMAGE"
+          } >> "$GITHUB_STEP_SUMMARY"
