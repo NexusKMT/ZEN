@@ -502,6 +502,7 @@ jobs:
             .unexpectedConversionWarnings == 0 and
             .converterWarningMessages == [$known_warning] and
             (.generatedSequences | length) == 1 and
+            (.generatedSequenceAudits | length) == 1 and
             (actor("/Game/Maps/Zen_Movie"; "MatineeActor_Movie") |
               .playOnLevelLoad == false and
               .looping == false and
@@ -516,6 +517,14 @@ jobs:
                 "InterpTrackFloatProp": 2,
                 "InterpTrackToggle": 5
               } and
+              (.sourceEventTracks | length) == 1 and
+              all(.sourceEventTracks[];
+                .keyCount == (.keys | length) and
+                all(.keys[];
+                  (.eventName | length) > 0 and
+                  (.timeSeconds | type) == "number"
+                )
+              ) and
               valid_reference_contexts
             ) and
             (actor("/Game/Maps/Zen_P"; "MatineeActor") |
@@ -587,11 +596,56 @@ jobs:
             ) and
             (blueprint_graph("/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.Zen_Movie.EventGraph") |
               .package == "/Game/Maps/Zen_Movie" and
+              .nodeCount == 20 and
+              ([.nodes[].pins[].links[]] | length) == 40 and
               ([.nodes[] | select(.class == "K2Node_MatineeController")] | length) == 1
             ) and
             (blueprint_graph("/Game/Maps/Zen_P.Zen_P:PersistentLevel.Zen_P.EventGraph") |
               .package == "/Game/Maps/Zen_P" and
+              .nodeCount == 186 and
+              ([.nodes[].pins[].links[]] | length) == 410 and
               ([.nodes[] | select(.class == "K2Node_MatineeController")] | length) == 2
+            ) and
+            (.generatedSequenceAudits[0] |
+              . as $audit |
+              .mappingVerified == true and
+              .sourceActor == "/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie" and
+              .sequence == "/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence" and
+              .sourceEventTrackCount == 1 and
+              .targetEventTrackCount == 1 and
+              .eventKeyCount == ([.eventTracks[].keys[]] | length) and
+              .uniqueEndpointCount == 7 and
+              (.eventTracks | length) == 1 and
+              all(.eventTracks[];
+                .keyCount == (.keys | length) and
+                (.sourceFireForwards | type) == "boolean" and
+                (.sourceFireBackwards | type) == "boolean" and
+                (.sourceFireWhenJumpingForwards | type) == "boolean" and
+                (.sourceUseCustomEventName | type) == "boolean" and
+                (.targetFireForwards | type) == "boolean" and
+                (.targetFireBackwards | type) == "boolean" and
+                all(.keys[];
+                  .frameNumber == .expectedFrameNumber and
+                  .endpointClass == "K2Node_CustomEvent" and
+                  (.endpointObjectPath | length) > 0 and
+                  (.sourceEventName | length) > 0
+                ) and
+                ([.keys[].sourceEventName] | unique | sort) == [
+                  "ActivateAmbient",
+                  "DeactivateSim",
+                  "DisableFish",
+                  "EnableFish",
+                  "FadeOutMix",
+                  "Fountain",
+                  "SwitchLevel"
+                ]
+              ) and
+              .directorBlueprint.graphCount == (.directorBlueprint.graphs | length) and
+              .directorBlueprint.graphCount > 0 and
+              all($audit.eventTracks[].keys[].endpointObjectPath;
+                . as $endpoint |
+                any($audit.directorBlueprint.graphs[].nodes[]; .objectPath == $endpoint)
+              )
             ) and
             (unique_blueprint_nodes("K2Node_MatineeController") | length) == 3 and
             all(unique_blueprint_nodes("K2Node_MatineeController")[];
@@ -691,6 +745,8 @@ jobs:
           literal_function_links="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .blueprintNode] | unique_by(.objectPath) | [.[] | .pins[].links[]] | length' "$report")"
           blueprint_graphs="$(jq '.blueprintGraphs | length' "$report")"
           blueprint_nodes="$(jq '[.blueprintGraphs[].nodes[]] | length' "$report")"
+          event_keys="$(jq '.generatedSequenceAudits[0].eventKeyCount' "$report")"
+          event_endpoints="$(jq '.generatedSequenceAudits[0].uniqueEndpointCount' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -714,6 +770,8 @@ jobs:
               "$controller_event_links" "$literal_function_links"
             printf '| Captured Level Blueprint graphs / nodes | `%s / %s` |\n' \
               "$blueprint_graphs" "$blueprint_nodes"
+            printf '| Verified converted event keys / Director endpoints | `%s / %s` |\n' \
+              "$event_keys" "$event_endpoints"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 

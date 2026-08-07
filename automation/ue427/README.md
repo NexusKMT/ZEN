@@ -35,6 +35,16 @@ defaults, and level-Actor bindings needed to design a behavior-preserving graph
 rewrite. The workflow uploads only this JSON audit for seven days; it does not
 upload project packages or Unreal Engine content.
 
+Source Matinee Event Track keys are recorded with their names, times, and
+forward/backward/jump flags. After conversion, every generated Sequencer event
+key is matched back to the source key by track order and exact frame conversion,
+and its serialized Director Blueprint endpoint is captured along with the full
+Director graph. The audit also proves that repeated source names reuse one
+endpoint and distinct source names never share an endpoint. This is necessary
+because Epic's 4.27 converter creates generic `MatineeEvent` endpoint names;
+the original Matinee event name is otherwise only present in a temporary map
+during conversion.
+
 An unconnected actor literal is still a serialized hard reference. It is
 reported and must be removed during graph cleanup even though it has no runtime
 behavior to translate.

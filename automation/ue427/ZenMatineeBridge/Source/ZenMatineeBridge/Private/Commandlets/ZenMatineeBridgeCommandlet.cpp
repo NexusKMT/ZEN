@@ -6,6 +6,7 @@
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
 #include "Editor.h"
+#include "Engine/Blueprint.h"
 #include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
@@ -22,6 +23,7 @@
 #include "Matinee/InterpData.h"
 #include "Matinee/InterpGroup.h"
 #include "Matinee/InterpTrack.h"
+#include "Matinee/InterpTrackEvent.h"
 #include "Matinee/MatineeActor.h"
 #include "Misc/FileHelper.h"
 #include "Misc/OutputDevice.h"
@@ -31,6 +33,8 @@
 #include "Misc/Paths.h"
 #include "MovieScene.h"
 #include "MovieSceneTrack.h"
+#include "Sections/MovieSceneEventTriggerSection.h"
+#include "Tracks/MovieSceneEventTrack.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
 #include "UObject/ReferencerFinder.h"
@@ -123,6 +127,87 @@ void CountSourceTracks(AMatineeActor* Actor, TMap<FString, int32>& Counts)
             CountSourceTrack(Track, Counts);
         }
     }
+}
+
+struct FSourceEventTrackRecord
+{
+    int32 GroupIndex = INDEX_NONE;
+    int32 TrackIndex = INDEX_NONE;
+    UInterpGroup* Group = nullptr;
+    UInterpTrackEvent* Track = nullptr;
+};
+
+TArray<FSourceEventTrackRecord> GatherSourceEventTracks(AMatineeActor* Actor)
+{
+    TArray<FSourceEventTrackRecord> Records;
+    if (Actor == nullptr || Actor->MatineeData == nullptr)
+    {
+        return Records;
+    }
+
+    for (int32 GroupIndex = 0; GroupIndex < Actor->MatineeData->InterpGroups.Num(); ++GroupIndex)
+    {
+        UInterpGroup* Group = Actor->MatineeData->InterpGroups[GroupIndex];
+        if (Group == nullptr)
+        {
+            continue;
+        }
+
+        for (int32 TrackIndex = 0; TrackIndex < Group->InterpTracks.Num(); ++TrackIndex)
+        {
+            UInterpTrackEvent* EventTrack = Cast<UInterpTrackEvent>(Group->InterpTracks[TrackIndex]);
+            if (EventTrack == nullptr)
+            {
+                continue;
+            }
+
+            FSourceEventTrackRecord& Record = Records.AddDefaulted_GetRef();
+            Record.GroupIndex = GroupIndex;
+            Record.TrackIndex = TrackIndex;
+            Record.Group = Group;
+            Record.Track = EventTrack;
+        }
+    }
+    return Records;
+}
+
+TArray<TSharedPtr<FJsonValue>> CaptureSourceEventTracks(AMatineeActor* Actor)
+{
+    TArray<TSharedPtr<FJsonValue>> TrackValues;
+    const TArray<FSourceEventTrackRecord> Records = GatherSourceEventTracks(Actor);
+    for (int32 EventTrackIndex = 0; EventTrackIndex < Records.Num(); ++EventTrackIndex)
+    {
+        const FSourceEventTrackRecord& Record = Records[EventTrackIndex];
+        TSharedPtr<FJsonObject> TrackJson = MakeShared<FJsonObject>();
+        TrackJson->SetNumberField(TEXT("eventTrackIndex"), EventTrackIndex);
+        TrackJson->SetNumberField(TEXT("groupIndex"), Record.GroupIndex);
+        TrackJson->SetNumberField(TEXT("trackIndex"), Record.TrackIndex);
+        TrackJson->SetStringField(TEXT("groupName"), Record.Group->GroupName.ToString());
+        TrackJson->SetStringField(TEXT("trackTitle"), Record.Track->TrackTitle);
+        TrackJson->SetStringField(TEXT("trackPath"), Record.Track->GetPathName());
+        TrackJson->SetBoolField(TEXT("fireForwards"), Record.Track->bFireEventsWhenForwards != 0);
+        TrackJson->SetBoolField(TEXT("fireBackwards"), Record.Track->bFireEventsWhenBackwards != 0);
+        TrackJson->SetBoolField(
+            TEXT("fireWhenJumpingForwards"),
+            Record.Track->bFireEventsWhenJumpingForwards != 0
+        );
+        TrackJson->SetBoolField(TEXT("useCustomEventName"), Record.Track->bUseCustomEventName != 0);
+
+        TArray<TSharedPtr<FJsonValue>> KeyValues;
+        for (int32 KeyIndex = 0; KeyIndex < Record.Track->EventTrack.Num(); ++KeyIndex)
+        {
+            const FEventTrackKey& Key = Record.Track->EventTrack[KeyIndex];
+            TSharedPtr<FJsonObject> KeyJson = MakeShared<FJsonObject>();
+            KeyJson->SetNumberField(TEXT("keyIndex"), KeyIndex);
+            KeyJson->SetNumberField(TEXT("timeSeconds"), Key.Time);
+            KeyJson->SetStringField(TEXT("eventName"), Key.EventName.ToString());
+            KeyValues.Add(MakeShared<FJsonValueObject>(KeyJson));
+        }
+        TrackJson->SetNumberField(TEXT("keyCount"), KeyValues.Num());
+        TrackJson->SetArrayField(TEXT("keys"), KeyValues);
+        TrackValues.Add(MakeShared<FJsonValueObject>(TrackJson));
+    }
+    return TrackValues;
 }
 
 void CountSequenceTrack(UMovieSceneTrack* Track, TMap<FString, int32>& Counts)
@@ -410,6 +495,289 @@ TSharedRef<FJsonObject> CaptureBlueprintGraph(UEdGraph* Graph)
     return GraphJson;
 }
 
+bool CaptureGeneratedSequenceAudit(
+    AMatineeActor* SourceActor,
+    ULevelSequence* Sequence,
+    TSharedPtr<FJsonObject>& OutAudit
+)
+{
+    const TArray<FSourceEventTrackRecord> SourceTracks = GatherSourceEventTracks(SourceActor);
+    TArray<UMovieSceneEventTrack*> TargetTracks;
+    for (UMovieSceneTrack* Track : Sequence->GetMovieScene()->GetMasterTracks())
+    {
+        if (UMovieSceneEventTrack* EventTrack = Cast<UMovieSceneEventTrack>(Track))
+        {
+            TargetTracks.Add(EventTrack);
+        }
+    }
+
+    if (SourceTracks.Num() != TargetTracks.Num())
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR event_track_count_mismatch actor=%s source=%d target=%d"),
+            *SourceActor->GetActorLabel(),
+            SourceTracks.Num(),
+            TargetTracks.Num()
+        );
+        return false;
+    }
+
+    TSharedPtr<FJsonObject> Audit = MakeShared<FJsonObject>();
+    Audit->SetStringField(TEXT("sourceActor"), SourceActor->GetPathName());
+    Audit->SetStringField(TEXT("sequence"), Sequence->GetPathName());
+    Audit->SetNumberField(TEXT("sourceEventTrackCount"), SourceTracks.Num());
+    Audit->SetNumberField(TEXT("targetEventTrackCount"), TargetTracks.Num());
+
+    const FFrameRate TickResolution = Sequence->GetMovieScene()->GetTickResolution();
+    Audit->SetNumberField(TEXT("tickResolutionNumerator"), TickResolution.Numerator);
+    Audit->SetNumberField(TEXT("tickResolutionDenominator"), TickResolution.Denominator);
+
+    TArray<TSharedPtr<FJsonValue>> EventTrackValues;
+    int32 TotalEventKeys = 0;
+    TSet<FString> UniqueEndpoints;
+    for (int32 EventTrackIndex = 0; EventTrackIndex < SourceTracks.Num(); ++EventTrackIndex)
+    {
+        const FSourceEventTrackRecord& SourceRecord = SourceTracks[EventTrackIndex];
+        UMovieSceneEventTrack* TargetTrack = TargetTracks[EventTrackIndex];
+        const TArray<UMovieSceneSection*>& Sections = TargetTrack->GetAllSections();
+        if (Sections.Num() != 1)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR event_section_count_mismatch actor=%s track=%d sections=%d"),
+                *SourceActor->GetActorLabel(),
+                EventTrackIndex,
+                Sections.Num()
+            );
+            return false;
+        }
+
+        const UMovieSceneEventTriggerSection* TriggerSection =
+            Cast<UMovieSceneEventTriggerSection>(Sections[0]);
+        if (TriggerSection == nullptr)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR event_trigger_section_missing actor=%s track=%d"),
+                *SourceActor->GetActorLabel(),
+                EventTrackIndex
+            );
+            return false;
+        }
+
+        const TMovieSceneChannelData<const FMovieSceneEvent> ChannelData =
+            TriggerSection->EventChannel.GetData();
+        const TArrayView<const FFrameNumber> Times = ChannelData.GetTimes();
+        const TArrayView<const FMovieSceneEvent> Events = ChannelData.GetValues();
+        if (Times.Num() != Events.Num() || Events.Num() != SourceRecord.Track->EventTrack.Num())
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR event_key_count_mismatch actor=%s track=%d source=%d times=%d events=%d"),
+                *SourceActor->GetActorLabel(),
+                EventTrackIndex,
+                SourceRecord.Track->EventTrack.Num(),
+                Times.Num(),
+                Events.Num()
+            );
+            return false;
+        }
+
+        TMap<FName, FString> EndpointBySourceEvent;
+        TMap<FString, FName> SourceEventByEndpoint;
+        TArray<TSharedPtr<FJsonValue>> KeyValues;
+        for (int32 KeyIndex = 0; KeyIndex < Events.Num(); ++KeyIndex)
+        {
+            const FEventTrackKey& SourceKey = SourceRecord.Track->EventTrack[KeyIndex];
+            const FFrameNumber ExpectedFrame = (SourceKey.Time * TickResolution).RoundToFrame();
+            if (Times[KeyIndex] != ExpectedFrame)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR event_time_mismatch actor=%s track=%d key=%d expected=%d actual=%d"),
+                    *SourceActor->GetActorLabel(),
+                    EventTrackIndex,
+                    KeyIndex,
+                    ExpectedFrame.Value,
+                    Times[KeyIndex].Value
+                );
+                return false;
+            }
+
+            UObject* Endpoint = Events[KeyIndex].WeakEndpoint.Get();
+            if (Endpoint == nullptr)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR event_endpoint_missing actor=%s track=%d key=%d"),
+                    *SourceActor->GetActorLabel(),
+                    EventTrackIndex,
+                    KeyIndex
+                );
+                return false;
+            }
+
+            const FString EndpointPath = Endpoint->GetPathName();
+            if (const FString* ExistingEndpoint = EndpointBySourceEvent.Find(SourceKey.EventName))
+            {
+                if (*ExistingEndpoint != EndpointPath)
+                {
+                    UE_LOG(
+                        LogZenMatineeBridge,
+                        Error,
+                        TEXT("ZEN_BRIDGE_ERROR source_event_endpoint_changed actor=%s event=%s"),
+                        *SourceActor->GetActorLabel(),
+                        *SourceKey.EventName.ToString()
+                    );
+                    return false;
+                }
+            }
+            else
+            {
+                EndpointBySourceEvent.Add(SourceKey.EventName, EndpointPath);
+            }
+
+            if (const FName* ExistingSourceEvent = SourceEventByEndpoint.Find(EndpointPath))
+            {
+                if (*ExistingSourceEvent != SourceKey.EventName)
+                {
+                    UE_LOG(
+                        LogZenMatineeBridge,
+                        Error,
+                        TEXT("ZEN_BRIDGE_ERROR endpoint_shared_by_source_events actor=%s endpoint=%s"),
+                        *SourceActor->GetActorLabel(),
+                        *EndpointPath
+                    );
+                    return false;
+                }
+            }
+            else
+            {
+                SourceEventByEndpoint.Add(EndpointPath, SourceKey.EventName);
+            }
+            UniqueEndpoints.Add(EndpointPath);
+
+            TSharedPtr<FJsonObject> KeyJson = MakeShared<FJsonObject>();
+            KeyJson->SetNumberField(TEXT("keyIndex"), KeyIndex);
+            KeyJson->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
+            KeyJson->SetNumberField(TEXT("sourceTimeSeconds"), SourceKey.Time);
+            KeyJson->SetNumberField(TEXT("expectedFrameNumber"), ExpectedFrame.Value);
+            KeyJson->SetNumberField(TEXT("frameNumber"), Times[KeyIndex].Value);
+            KeyJson->SetStringField(TEXT("endpointClass"), Endpoint->GetClass()->GetName());
+            KeyJson->SetStringField(TEXT("endpointObjectPath"), EndpointPath);
+            KeyJson->SetStringField(
+                TEXT("compiledFunctionName"),
+                Events[KeyIndex].CompiledFunctionName.ToString()
+            );
+            KeyJson->SetStringField(
+                TEXT("boundObjectPinName"),
+                Events[KeyIndex].BoundObjectPinName.ToString()
+            );
+            KeyJson->SetStringField(
+                TEXT("runtimeFunctionPath"),
+                Events[KeyIndex].Ptrs.Function != nullptr
+                    ? Events[KeyIndex].Ptrs.Function->GetPathName()
+                    : FString()
+            );
+            KeyValues.Add(MakeShared<FJsonValueObject>(KeyJson));
+        }
+
+        TSharedPtr<FJsonObject> TrackJson = MakeShared<FJsonObject>();
+        TrackJson->SetNumberField(TEXT("eventTrackIndex"), EventTrackIndex);
+        TrackJson->SetStringField(TEXT("sourceGroupName"), SourceRecord.Group->GroupName.ToString());
+        TrackJson->SetStringField(TEXT("sourceTrackPath"), SourceRecord.Track->GetPathName());
+        TrackJson->SetStringField(TEXT("targetTrackPath"), TargetTrack->GetPathName());
+        TrackJson->SetStringField(TEXT("targetDisplayName"), TargetTrack->GetDisplayName().ToString());
+        TrackJson->SetBoolField(TEXT("sourceFireForwards"), SourceRecord.Track->bFireEventsWhenForwards != 0);
+        TrackJson->SetBoolField(TEXT("sourceFireBackwards"), SourceRecord.Track->bFireEventsWhenBackwards != 0);
+        TrackJson->SetBoolField(
+            TEXT("sourceFireWhenJumpingForwards"),
+            SourceRecord.Track->bFireEventsWhenJumpingForwards != 0
+        );
+        TrackJson->SetBoolField(
+            TEXT("sourceUseCustomEventName"),
+            SourceRecord.Track->bUseCustomEventName != 0
+        );
+        TrackJson->SetBoolField(TEXT("targetFireForwards"), TargetTrack->bFireEventsWhenForwards != 0);
+        TrackJson->SetBoolField(TEXT("targetFireBackwards"), TargetTrack->bFireEventsWhenBackwards != 0);
+        TrackJson->SetNumberField(TEXT("keyCount"), KeyValues.Num());
+        TrackJson->SetArrayField(TEXT("keys"), KeyValues);
+        EventTrackValues.Add(MakeShared<FJsonValueObject>(TrackJson));
+        TotalEventKeys += KeyValues.Num();
+    }
+    Audit->SetNumberField(TEXT("eventKeyCount"), TotalEventKeys);
+    Audit->SetNumberField(TEXT("uniqueEndpointCount"), UniqueEndpoints.Num());
+    Audit->SetArrayField(TEXT("eventTracks"), EventTrackValues);
+
+    UBlueprint* DirectorBlueprint = Sequence->GetDirectorBlueprint();
+    if (SourceTracks.Num() > 0 && DirectorBlueprint == nullptr)
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR director_blueprint_missing actor=%s"),
+            *SourceActor->GetActorLabel()
+        );
+        return false;
+    }
+
+    if (DirectorBlueprint != nullptr)
+    {
+        TSharedPtr<FJsonObject> DirectorJson = MakeShared<FJsonObject>();
+        DirectorJson->SetStringField(TEXT("blueprintPath"), DirectorBlueprint->GetPathName());
+
+        TMap<FString, UEdGraph*> DirectorGraphsByPath;
+        for (UEdGraph* Graph : DirectorBlueprint->UbergraphPages)
+        {
+            if (Graph != nullptr)
+            {
+                DirectorGraphsByPath.Add(Graph->GetPathName(), Graph);
+            }
+        }
+        for (UEdGraph* Graph : DirectorBlueprint->FunctionGraphs)
+        {
+            if (Graph != nullptr)
+            {
+                DirectorGraphsByPath.Add(Graph->GetPathName(), Graph);
+            }
+        }
+
+        TArray<FString> DirectorGraphPaths;
+        DirectorGraphsByPath.GetKeys(DirectorGraphPaths);
+        DirectorGraphPaths.Sort();
+        TArray<TSharedPtr<FJsonValue>> DirectorGraphValues;
+        for (const FString& GraphPath : DirectorGraphPaths)
+        {
+            DirectorGraphValues.Add(MakeShared<FJsonValueObject>(
+                CaptureBlueprintGraph(DirectorGraphsByPath.FindChecked(GraphPath))
+            ));
+        }
+        DirectorJson->SetNumberField(TEXT("graphCount"), DirectorGraphValues.Num());
+        DirectorJson->SetArrayField(TEXT("graphs"), DirectorGraphValues);
+        Audit->SetObjectField(TEXT("directorBlueprint"), DirectorJson);
+    }
+
+    Audit->SetBoolField(TEXT("mappingVerified"), true);
+    OutAudit = Audit;
+    UE_LOG(
+        LogZenMatineeBridge,
+        Display,
+        TEXT("ZEN_BRIDGE_EVENT_MAPPING actor=%s tracks=%d keys=%d endpoints=%d"),
+        *SourceActor->GetActorLabel(),
+        SourceTracks.Num(),
+        TotalEventKeys,
+        UniqueEndpoints.Num()
+    );
+    return true;
+}
+
 TSharedRef<FJsonObject> CaptureReferenceContext(
     AMatineeActor* Actor,
     const FString& LoadedMap,
@@ -623,6 +991,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     TArray<TSharedPtr<FJsonValue>> MatineeInventory;
     TArray<TSharedPtr<FJsonValue>> ConverterWarningMessages;
     TArray<TSharedPtr<FJsonValue>> GeneratedSequences;
+    TArray<TSharedPtr<FJsonValue>> GeneratedSequenceAudits;
 
     // Inventory every physical actor before creating or saving any asset.
     // Persistent maps can load the same streaming-level actor, so package and
@@ -700,6 +1069,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             InventoryEntry->SetBoolField(TEXT("hidePlayer"), Actor->bHidePlayer != 0);
             InventoryEntry->SetBoolField(TEXT("hideHud"), Actor->bHideHud != 0);
             InventoryEntry->SetStringField(TEXT("controllerName"), Actor->MatineeControllerName.ToString());
+            InventoryEntry->SetArrayField(TEXT("sourceEventTracks"), CaptureSourceEventTracks(Actor));
 
             TMap<FString, int32> ActorSourceTrackCounts;
             CountSourceTracks(Actor, ActorSourceTrackCounts);
@@ -858,6 +1228,13 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             return 22;
         }
 
+        TSharedPtr<FJsonObject> SequenceAudit;
+        if (!CaptureGeneratedSequenceAudit(Actor, Sequence, SequenceAudit))
+        {
+            return 30;
+        }
+        GeneratedSequenceAudits.Add(MakeShared<FJsonValueObject>(SequenceAudit));
+
         if (ActorWarningMessages.Num() != ActorWarnings)
         {
             UE_LOG(
@@ -996,6 +1373,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     Report->SetArrayField(TEXT("blueprintGraphs"), BlueprintGraphs);
     Report->SetArrayField(TEXT("converterWarningMessages"), ConverterWarningMessages);
     Report->SetArrayField(TEXT("generatedSequences"), GeneratedSequences);
+    Report->SetArrayField(TEXT("generatedSequenceAudits"), GeneratedSequenceAudits);
     Report->SetObjectField(TEXT("sourceTrackClasses"), CountsToJson(SourceTrackCounts));
     Report->SetObjectField(TEXT("sequenceTrackClasses"), CountsToJson(SequenceTrackCounts));
 
