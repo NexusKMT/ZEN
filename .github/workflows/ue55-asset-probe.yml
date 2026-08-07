@@ -564,27 +564,70 @@ jobs:
           set -euo pipefail
 
           version_log="$RUNNER_TEMP/ue-version.log"
-          if ! timeout 120s docker run --rm \
+          set +e
+          timeout 120s docker run --rm \
             --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
             "$UE55_IMAGE" \
             bash -lc '
               set -euo pipefail
               test -r /workspace/EpicZenGarden/EpicZenGarden.uproject
+              echo "Verified that the project descriptor is readable."
               test -d /workspace/EpicZenGarden/Content
+              echo "Verified that the project Content directory exists."
               if touch /workspace/EpicZenGarden/.write-probe 2>/dev/null; then
                 echo "Project mount unexpectedly accepted a write." >&2
                 exit 1
               fi
-              /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor -version
+              echo "Verified that the read-only project mount rejected a write."
+
+              runtime_dir=/tmp/ue-runtime
+              mkdir -p "$runtime_dir"
+              chmod 0700 "$runtime_dir"
+              export XDG_RUNTIME_DIR="$runtime_dir"
+
+              /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor \
+                -unattended -NullRHI -NoSound -NoSplash -NoP4 \
+                -ExecCmds=Quit -Seconds=60 \
+                -stdout -FullStdOutLogOutput -UTF8Output
             ' > "$version_log" 2>&1
-          then
-            cat "$version_log"
+          probe_status="$?"
+          set -e
+
+          cat "$version_log"
+          echo "UE 5.5.4 probe process status: $probe_status"
+
+          if [[ "$probe_status" = 124 ]]; then
+            echo '::error::The UE 5.5.4 container probe timed out.'
+            exit 1
+          fi
+          if [[ "$probe_status" != 0 ]]; then
             echo '::error::The UE 5.5.4 container probe failed.'
+            exit "$probe_status"
+          fi
+
+          required_probe_lines=(
+            'Verified that the project descriptor is readable.'
+            'Verified that the project Content directory exists.'
+            'Verified that the read-only project mount rejected a write.'
+            'LogInit: Engine Version: 5.5.4-37670630+UE5'
+            "LogInit:  - we're running without rendering"
+            'LogExit: Exiting.'
+          )
+          for required_line in "${required_probe_lines[@]}"; do
+            if ! grep -Fq -- "$required_line" "$version_log"; then
+              echo "::error::The UE 5.5.4 probe log is missing required success evidence: ${required_line}"
+              exit 1
+            fi
+          done
+
+          if grep -Eiq \
+            'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault' \
+            "$version_log"
+          then
+            echo '::error::The UE 5.5.4 probe log contains an environment, abnormal-exit, or fatal marker.'
             exit 1
           fi
 
-          cat "$version_log"
-          grep -F '5.5.4' "$version_log"
           echo 'UE 5.5.4 started successfully and the Zen Garden project mount remained read-only.'
 
           {
