@@ -484,6 +484,8 @@ jobs:
                 .blueprintNode
               ] |
               unique_by(.objectPath);
+            def controller($title):
+              first(unique_blueprint_nodes("K2Node_MatineeController")[] | select(.title == $title));
             .engineVersion == "4.27.2" and
             .targetMap == "/Game/Maps/Zen_Movie" and
             .expectedActor == "MatineeActor_Movie" and
@@ -580,7 +582,47 @@ jobs:
               .pins[0].direction == "output" and
               .pins[0].category == "object" and
               .pins[0].linkCount == (.pins[0].links | length) and
-              .pins[0].linkCount >= 1
+              all(.pins[0].links[];
+                .class == "K2Node_CallFunction" and
+                .functionOwnerClass == "/Script/Engine.MatineeActor"
+              )
+            ) and
+            ([
+              unique_blueprint_nodes("K2Node_Literal")[] |
+              select(.pins[0].linkCount == 0) |
+              .objectPath
+            ] == [
+              "/Game/Maps/Zen_P.Zen_P:PersistentLevel.Zen_P.EventGraph.K2Node_Literal_713"
+            ]) and
+            ([
+              unique_blueprint_nodes("K2Node_Literal")[].pins[0].links[].functionName
+            ] | sort) == ["Pause", "Pause", "Play", "Play", "Play", "Stop", "Stop"] and
+            (controller("MatineeActor_Movie") |
+              [.pins[] | {name, linkCount}] == [
+                {"name":"Finished", "linkCount":0},
+                {"name":"ActivateAmbient", "linkCount":1},
+                {"name":"DeactivateSim", "linkCount":1},
+                {"name":"DisableFish", "linkCount":1},
+                {"name":"Fountain", "linkCount":1},
+                {"name":"SwitchLevel", "linkCount":1},
+                {"name":"FadeOutMix", "linkCount":1},
+                {"name":"EnableFish", "linkCount":1}
+              ]
+            ) and
+            (controller("MatineeActor") |
+              [.pins[] | {name, linkCount}] == [
+                {"name":"Finished", "linkCount":0},
+                {"name":"Hitcher", "linkCount":1},
+                {"name":"EndOfMatinee", "linkCount":1}
+              ]
+            ) and
+            (controller("MatineeActor3") |
+              [.pins[] | {name, linkCount}] == [
+                {"name":"Finished", "linkCount":0},
+                {"name":"StopButterflies", "linkCount":1},
+                {"name":"End", "linkCount":1},
+                {"name":"SwitchLevel", "linkCount":1}
+              ]
             ) and
             .sourceTrackClasses.InterpTrackDirector > 0 and
             .sourceTrackClasses.InterpTrackFade > 0 and
@@ -614,6 +656,8 @@ jobs:
           referencers="$(jq '[.matineeInventory[].referenceContexts[].referencers[]] | length' "$report")"
           controller_nodes="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_MatineeController") | .objectPath] | unique | length' "$report")"
           literal_nodes="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .objectPath] | unique | length' "$report")"
+          controller_event_links="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_MatineeController") | .blueprintNode] | unique_by(.objectPath) | [.[] | .pins[].links[]] | length' "$report")"
+          literal_function_links="$(jq '[.matineeInventory[].referenceContexts[].referencers[] | select(.class == "K2Node_Literal") | .blueprintNode] | unique_by(.objectPath) | [.[] | .pins[].links[]] | length' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -633,6 +677,8 @@ jobs:
               "$reference_contexts" "$referencers"
             printf '| Blueprint Matinee controllers / actor literals | `%s / %s` |\n' \
               "$controller_nodes" "$literal_nodes"
+            printf '| Controller event links / literal function links | `%s / %s` |\n' \
+              "$controller_event_links" "$literal_function_links"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 

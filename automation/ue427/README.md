@@ -28,6 +28,10 @@ compile to Matinee delegate events, while actor literals compile to level-actor
 reference properties; those are separate migration problems and must remain
 distinguishable in the report.
 
+An unconnected actor literal is still a serialized hard reference. It is
+reported and must be removed during graph cleanup even though it has no runtime
+behavior to translate.
+
 Conversion is deliberately scoped to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors
 observed while `Zen_P` was loaded are inventoried but not modified.
