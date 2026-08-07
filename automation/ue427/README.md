@@ -20,11 +20,18 @@ observed while `Zen_P` was loaded are inventoried but not modified.
 
 The commandlet requires the target actor's Director, Fade, Sound, Event, and
 Toggle tracks, then requires the generated Sequencer asset to contain Camera
-Cut, Fade, Audio, Event, and Particle tracks before it saves anything. Any
-warning from Epic's converter is a hard failure because unsupported tracks can
-otherwise be dropped. The first bridge deliberately retains the legacy Matinee
-actor beside the generated Level Sequence so their behavior can be compared
-before source cleanup is authorized as a separate migration step.
+Cut, Fade, Audio, Event, and Particle tracks before it saves anything.
+
+Epic's 4.27 converter emits one false-positive `Unsupported track 'Fade'.`
+warning from its generic group pass, then converts that Fade track in its
+dedicated Director pass. The bridge captures converter warnings and accepts
+only that exact text when the expected source Fade and generated
+`MovieSceneFadeTrack` are both present. A changed warning count, changed text,
+missing Fade output, or any additional warning is a hard failure because truly
+unsupported tracks can otherwise be dropped. The first bridge deliberately
+retains the legacy Matinee actor beside the generated Level Sequence so their
+behavior can be compared before source cleanup is authorized as a separate
+migration step.
 
 The successful command writes:
 

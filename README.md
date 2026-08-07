@@ -41,10 +41,12 @@ content to this public repository. It:
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
 tracks before conversion and the resulting Camera Cut, Fade, Audio, Event, and
-Particle tracks before it saves anything. Converter warnings are fatal. Source
-Matinee cleanup remains a separate audited decision after functional
-comparison. See [`automation/ue427/README.md`](automation/ue427/README.md) for
-its boundary and implementation rationale.
+Particle tracks before it saves anything. Converter warnings are fatal except
+for UE 4.27's exact, captured Fade false positive when the generated Fade track
+is independently verified. Source Matinee cleanup remains a separate audited
+decision after functional comparison. See
+[`automation/ue427/README.md`](automation/ue427/README.md) for its boundary and
+implementation rationale.
 
 The workflow enforces the migration order. `run_ue_container=true` is rejected
 unless `run_ue427_bridge=true`, so UE 5.5.4 cannot be pointed at the original

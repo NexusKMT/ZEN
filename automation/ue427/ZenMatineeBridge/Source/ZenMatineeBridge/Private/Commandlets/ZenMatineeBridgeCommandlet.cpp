@@ -15,6 +15,8 @@
 #include "Matinee/InterpTrack.h"
 #include "Matinee/MatineeActor.h"
 #include "Misc/FileHelper.h"
+#include "Misc/OutputDevice.h"
+#include "Misc/OutputDeviceRedirector.h"
 #include "Misc/PackageName.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
@@ -43,6 +45,41 @@ DEFINE_LOG_CATEGORY(LogMatineeToLevelSequence);
 
 namespace
 {
+class FMatineeWarningCapture final : public FOutputDevice
+{
+public:
+    FMatineeWarningCapture()
+    {
+        GLog->AddOutputDevice(this);
+    }
+
+    virtual ~FMatineeWarningCapture() override
+    {
+        GLog->RemoveOutputDevice(this);
+    }
+
+    virtual void Serialize(
+        const TCHAR* Message,
+        ELogVerbosity::Type Verbosity,
+        const FName& Category
+    ) override
+    {
+        static const FName ConverterCategory(TEXT("LogMatineeToLevelSequence"));
+        if (Category == ConverterCategory && Verbosity == ELogVerbosity::Warning)
+        {
+            Warnings.Add(Message);
+        }
+    }
+
+    const TArray<FString>& GetWarnings() const
+    {
+        return Warnings;
+    }
+
+private:
+    TArray<FString> Warnings;
+};
+
 void CountSourceTrack(UInterpTrack* Track, TMap<FString, int32>& Counts)
 {
     if (Track == nullptr)
@@ -225,11 +262,14 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     int32 MatineesConverted = 0;
     int32 MatineesRetained = 0;
     int32 ConversionWarnings = 0;
+    int32 KnownConversionWarnings = 0;
+    int32 UnexpectedConversionWarnings = 0;
     bool bFoundExpectedActor = false;
     TMap<FString, int32> SourceTrackCounts;
     TMap<FString, int32> SequenceTrackCounts;
     TSet<FString> InventoriedActors;
     TArray<TSharedPtr<FJsonValue>> MatineeInventory;
+    TArray<TSharedPtr<FJsonValue>> ConverterWarningMessages;
     TArray<TSharedPtr<FJsonValue>> GeneratedSequences;
 
     // Inventory every physical actor before creating or saving any asset.
@@ -383,27 +423,17 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     {
         const FString ActorLabel = Actor->GetActorLabel();
         int32 ActorWarnings = 0;
-        TWeakObjectPtr<ALevelSequenceActor> NewActor =
-            Converter.ConvertSingleMatineeToLevelSequence(Actor, ActorWarnings);
+        TWeakObjectPtr<ALevelSequenceActor> NewActor;
+        TArray<FString> ActorWarningMessages;
+        {
+            FMatineeWarningCapture WarningCapture;
+            NewActor = Converter.ConvertSingleMatineeToLevelSequence(Actor, ActorWarnings);
+            ActorWarningMessages = WarningCapture.GetWarnings();
+        }
         if (!NewActor.IsValid())
         {
             UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR conversion_failed actor=%s"), *ActorLabel);
             return 19;
-        }
-
-        // Epic warns that unsupported tracks are dropped. Reject any warning
-        // before a dirty package is saved so no lossy conversion can become
-        // accepted bridge output.
-        if (ActorWarnings != 0)
-        {
-            UE_LOG(
-                LogZenMatineeBridge,
-                Error,
-                TEXT("ZEN_BRIDGE_ERROR conversion_warning actor=%s warnings=%d"),
-                *ActorLabel,
-                ActorWarnings
-            );
-            return 20;
         }
 
         ULevelSequence* Sequence = Cast<ULevelSequence>(NewActor->LevelSequence.TryLoad());
@@ -420,15 +450,77 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             return 22;
         }
 
+        if (ActorWarningMessages.Num() != ActorWarnings)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR warning_capture_mismatch actor=%s reported=%d captured=%d"),
+                *ActorLabel,
+                ActorWarnings,
+                ActorWarningMessages.Num()
+            );
+            return 23;
+        }
+
+        int32 ActorKnownWarnings = 0;
+        for (const FString& WarningMessage : ActorWarningMessages)
+        {
+            ConverterWarningMessages.Add(MakeShared<FJsonValueString>(WarningMessage));
+
+            // UE 4.27's generic group pass warns for Fade, then the dedicated
+            // director pass converts that same track. Accept only that exact
+            // false positive after both source and output tracks are proven.
+            const bool bKnownFadeWarning =
+                WarningMessage == TEXT("Unsupported track 'Fade'.") &&
+                SourceTrackCounts.FindRef(TEXT("InterpTrackFade")) == 1 &&
+                SequenceTrackCounts.FindRef(TEXT("MovieSceneFadeTrack")) > 0;
+            if (!bKnownFadeWarning)
+            {
+                UnexpectedConversionWarnings++;
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR unexpected_conversion_warning actor=%s message=%s"),
+                    *ActorLabel,
+                    *WarningMessage
+                );
+                return 24;
+            }
+
+            ActorKnownWarnings++;
+            UE_LOG(
+                LogZenMatineeBridge,
+                Display,
+                TEXT("ZEN_BRIDGE_KNOWN_WARNING actor=%s message=%s"),
+                *ActorLabel,
+                *WarningMessage
+            );
+        }
+
+        if (ActorKnownWarnings != ActorWarnings)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR unexplained_conversion_warning actor=%s reported=%d known=%d"),
+                *ActorLabel,
+                ActorWarnings,
+                ActorKnownWarnings
+            );
+            return 25;
+        }
+
         const FString SequencePath = Sequence->GetPathName();
         GeneratedSequences.Add(MakeShared<FJsonValueString>(SequencePath));
         ConversionWarnings += ActorWarnings;
+        KnownConversionWarnings += ActorKnownWarnings;
         MatineesConverted++;
 
         if (!IsValid(Actor) || Actor->GetWorld() != World)
         {
             UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR source_actor_not_retained actor=%s"), *ActorLabel);
-            return 23;
+            return 26;
         }
         MatineesRetained++;
 
@@ -447,7 +539,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     if (!FEditorFileUtils::SaveDirtyPackages(false, true, true, true, false, false))
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR save_failed path=%s"), *TargetMapFile);
-        return 24;
+        return 27;
     }
     ConvertedMaps = 1;
 
@@ -466,7 +558,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             MatineesRetained,
             bFoundExpectedActor ? 1 : 0
         );
-        return 25;
+        return 28;
     }
 
     TSharedRef<FJsonObject> Report = MakeShared<FJsonObject>();
@@ -479,9 +571,12 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     Report->SetNumberField(TEXT("sourceActorsRetained"), MatineesRetained);
     Report->SetNumberField(TEXT("sourceActorsRemoved"), 0);
     Report->SetNumberField(TEXT("conversionWarnings"), ConversionWarnings);
+    Report->SetNumberField(TEXT("knownConversionWarnings"), KnownConversionWarnings);
+    Report->SetNumberField(TEXT("unexpectedConversionWarnings"), UnexpectedConversionWarnings);
     Report->SetStringField(TEXT("targetMap"), TargetMap);
     Report->SetStringField(TEXT("expectedActor"), ExpectedActor);
     Report->SetArrayField(TEXT("matineeInventory"), MatineeInventory);
+    Report->SetArrayField(TEXT("converterWarningMessages"), ConverterWarningMessages);
     Report->SetArrayField(TEXT("generatedSequences"), GeneratedSequences);
     Report->SetObjectField(TEXT("sourceTrackClasses"), CountsToJson(SourceTrackCounts));
     Report->SetObjectField(TEXT("sequenceTrackClasses"), CountsToJson(SequenceTrackCounts));
@@ -504,17 +599,19 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     ))
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR report_write_failed path=%s"), *ReportPath);
-        return 26;
+        return 29;
     }
 
     UE_LOG(
         LogZenMatineeBridge,
         Display,
-        TEXT("ZEN_BRIDGE_SUCCESS maps=%d converted=%d retained=%d warnings=%d report=%s"),
+        TEXT("ZEN_BRIDGE_SUCCESS maps=%d converted=%d retained=%d warnings=%d known=%d unexpected=%d report=%s"),
         MapFiles.Num(),
         MatineesConverted,
         MatineesRetained,
         ConversionWarnings,
+        KnownConversionWarnings,
+        UnexpectedConversionWarnings,
         *ReportPath
     );
     return 0;

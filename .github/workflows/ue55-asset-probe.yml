@@ -434,7 +434,10 @@ jobs:
             .matineesConverted == 1 and
             .sourceActorsRetained == 1 and
             .sourceActorsRemoved == 0 and
-            .conversionWarnings == 0 and
+            .conversionWarnings == 1 and
+            .knownConversionWarnings == 1 and
+            .unexpectedConversionWarnings == 0 and
+            .converterWarningMessages == ["Unsupported track 'Fade'."] and
             (.generatedSequences | length) == 1 and
             .sourceTrackClasses.InterpTrackDirector > 0 and
             .sourceTrackClasses.InterpTrackFade > 0 and
@@ -463,6 +466,8 @@ jobs:
           target_map="$(jq -r '.targetMap' "$report")"
           target_actor="$(jq -r '.expectedActor' "$report")"
           warnings="$(jq -r '.conversionWarnings' "$report")"
+          known_warnings="$(jq -r '.knownConversionWarnings' "$report")"
+          unexpected_warnings="$(jq -r '.unexpectedConversionWarnings' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -476,7 +481,8 @@ jobs:
             echo '| Matinee actors converted | `1` |'
             echo '| Source Matinee actors retained | `1` |'
             printf '| Generated sequence | `%s` |\n' "$sequence"
-            printf '| Conversion warnings | `%s` |\n' "$warnings"
+            printf '| Converter warnings (total / known / unexpected) | `%s / %s / %s` |\n' \
+              "$warnings" "$known_warnings" "$unexpected_warnings"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
