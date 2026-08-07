@@ -25,7 +25,7 @@ env:
   EXTRACTED_FILES: "960"
   EXTRACTED_BYTES: "2255274451"
   PROJECT_ROOT_NAME: EpicZenGarden
-  RCLONE_VERSION: "1.75.0"
+  RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
   UE_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
 
@@ -37,7 +37,7 @@ jobs:
 
     steps:
       - name: Check out the public harness
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
       - name: Report initial runner capacity
         shell: bash
@@ -74,7 +74,7 @@ jobs:
 
           curl --fail --location --silent --show-error --retry 5 \
             --output "$bundle" \
-            "https://downloads.rclone.org/v${RCLONE_VERSION}/rclone-v${RCLONE_VERSION}-linux-amd64.zip"
+            "https://downloads.rclone.org/v${RCLONE_RELEASE}/rclone-v${RCLONE_RELEASE}-linux-amd64.zip"
           printf '%s  %s\n' "$RCLONE_BUNDLE_SHA256" "$bundle" | sha256sum --check --status
           unzip -q "$bundle" -d "$tool_dir"
 
@@ -82,7 +82,7 @@ jobs:
           test -n "$rclone_bin"
           chmod 0755 "$rclone_bin"
           version_line="$("$rclone_bin" version | sed -n '1p')"
-          test "$version_line" = "rclone v${RCLONE_VERSION}"
+          test "$version_line" = "rclone v${RCLONE_RELEASE}"
 
           printf 'RCLONE_BIN=%s\n' "$rclone_bin" >> "$GITHUB_ENV"
           printf 'Installed %s\n' "$version_line"
