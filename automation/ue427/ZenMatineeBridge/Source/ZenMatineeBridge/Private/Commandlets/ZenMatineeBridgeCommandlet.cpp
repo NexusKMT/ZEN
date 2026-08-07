@@ -320,6 +320,29 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             InventoryEntry->SetStringField(TEXT("map"), ActorMap);
             InventoryEntry->SetStringField(TEXT("actor"), ActorLabel);
             InventoryEntry->SetStringField(TEXT("objectName"), Actor->GetName());
+            InventoryEntry->SetBoolField(TEXT("playOnLevelLoad"), Actor->bPlayOnLevelLoad != 0);
+            InventoryEntry->SetBoolField(TEXT("looping"), Actor->bLooping != 0);
+            InventoryEntry->SetBoolField(TEXT("rewindOnPlay"), Actor->bRewindOnPlay != 0);
+            InventoryEntry->SetNumberField(TEXT("playRate"), Actor->PlayRate);
+
+            TMap<FString, int32> ActorSourceTrackCounts;
+            CountSourceTracks(Actor, ActorSourceTrackCounts);
+            InventoryEntry->SetObjectField(
+                TEXT("sourceTrackClasses"),
+                CountsToJson(ActorSourceTrackCounts)
+            );
+            for (const TPair<FString, int32>& Pair : ActorSourceTrackCounts)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Display,
+                    TEXT("ZEN_BRIDGE_INVENTORY_TRACK map=%s actor=%s class=%s count=%d"),
+                    *ActorMap,
+                    *ActorLabel,
+                    *Pair.Key,
+                    Pair.Value
+                );
+            }
             MatineeInventory.Add(MakeShared<FJsonValueObject>(InventoryEntry));
 
             const bool bIsTargetMap = ActorMap == TargetMap;
