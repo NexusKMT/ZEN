@@ -463,10 +463,25 @@ jobs:
           jq . "$report"
           jq --exit-status \
             --arg known_warning "Unsupported track 'Fade'." '
+            def actor($map; $name):
+              first(.matineeInventory[] | select(.map == $map and .actor == $name));
+            def valid_reference_contexts:
+              (.referenceContexts | length) >= 1 and
+              all(.referenceContexts[];
+                .referencerCount >= 1 and
+                .referencerCount == (.referencers | length) and
+                all(.referencers[];
+                  (.class | type) == "string" and
+                  (.objectPath | type) == "string" and
+                  (.package | type) == "string" and
+                  .insideSourceActor == false
+                )
+              );
             .engineVersion == "4.27.2" and
             .targetMap == "/Game/Maps/Zen_Movie" and
             .expectedActor == "MatineeActor_Movie" and
             .uniqueMatineesDiscovered == 3 and
+            (.matineeInventory | length) == 3 and
             .matineesFound == 1 and
             .matineesConverted == 1 and
             .sourceActorsRetained == 1 and
@@ -476,6 +491,68 @@ jobs:
             .unexpectedConversionWarnings == 0 and
             .converterWarningMessages == [$known_warning] and
             (.generatedSequences | length) == 1 and
+            (actor("/Game/Maps/Zen_Movie"; "MatineeActor_Movie") |
+              .playOnLevelLoad == false and
+              .looping == false and
+              .rewindOnPlay == false and
+              .playRate == 1 and
+              .sourceTrackClasses == {
+                "InterpTrackDirector": 1,
+                "InterpTrackEvent": 1,
+                "InterpTrackFade": 1,
+                "InterpTrackSound": 10,
+                "InterpTrackMove": 2,
+                "InterpTrackFloatProp": 2,
+                "InterpTrackToggle": 5
+              } and
+              valid_reference_contexts
+            ) and
+            (actor("/Game/Maps/Zen_P"; "MatineeActor") |
+              .playOnLevelLoad == false and
+              .looping == true and
+              .rewindOnPlay == false and
+              .playRate == 1 and
+              .sourceTrackClasses == {
+                "InterpTrackMove": 2,
+                "InterpTrackFloatProp": 2,
+                "InterpTrackDirector": 1,
+                "InterpTrackFade": 1,
+                "InterpTrackToggle": 1,
+                "InterpTrackEvent": 1
+              } and
+              valid_reference_contexts
+            ) and
+            (actor("/Game/Maps/Zen_P"; "MatineeActor3") |
+              .playOnLevelLoad == false and
+              .looping == false and
+              .rewindOnPlay == false and
+              .playRate == 1 and
+              .sourceTrackClasses == {
+                "InterpTrackMove": 2,
+                "InterpTrackFloatProp": 2,
+                "InterpTrackEvent": 2,
+                "InterpTrackDirector": 1,
+                "InterpTrackSound": 6,
+                "InterpTrackToggle": 2
+              } and
+              valid_reference_contexts
+            ) and
+            all(.matineeInventory[];
+              (.forceStartPositionEnabled | type) == "boolean" and
+              (.forceStartPosition | type) == "number" and
+              (.noResetOnRewind | type) == "boolean" and
+              (.rewindIfAlreadyPlaying | type) == "boolean" and
+              (.disableRadioFilter | type) == "boolean" and
+              (.clientSideOnly | type) == "boolean" and
+              (.skipUpdateIfNotVisible | type) == "boolean" and
+              (.skippable | type) == "boolean" and
+              (.preferredSplitScreenNumber | type) == "number" and
+              (.disableMovementInput | type) == "boolean" and
+              (.disableLookAtInput | type) == "boolean" and
+              (.hidePlayer | type) == "boolean" and
+              (.hideHud | type) == "boolean" and
+              (.controllerName | type) == "string"
+            ) and
             .sourceTrackClasses.InterpTrackDirector > 0 and
             .sourceTrackClasses.InterpTrackFade > 0 and
             .sourceTrackClasses.InterpTrackSound > 0 and
@@ -504,6 +581,8 @@ jobs:
           warnings="$(jq -r '.conversionWarnings' "$report")"
           known_warnings="$(jq -r '.knownConversionWarnings' "$report")"
           unexpected_warnings="$(jq -r '.unexpectedConversionWarnings' "$report")"
+          reference_contexts="$(jq '[.matineeInventory[].referenceContexts[]] | length' "$report")"
+          referencers="$(jq '[.matineeInventory[].referenceContexts[].referencers[]] | length' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -519,6 +598,8 @@ jobs:
             printf '| Generated sequence | `%s` |\n' "$sequence"
             printf '| Converter warnings (total / known / unexpected) | `%s / %s / %s` |\n' \
               "$warnings" "$known_warnings" "$unexpected_warnings"
+            printf '| Matinee reference contexts / hard referencers | `%s / %s` |\n' \
+              "$reference_contexts" "$referencers"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 

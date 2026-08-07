@@ -14,7 +14,14 @@ public repository.
 Before saving anything, the commandlet inventories Matinee actors across every
 map by their owning level package and object name. This prevents an actor from
 being counted twice when it is seen both in its own streaming-level map and
-through the persistent map. Conversion is deliberately scoped to
+through the persistent map. Every loaded-map context is still retained for a
+deduplicated actor so cross-level references are not hidden. The report records
+each actor's track classes, playback/cinematic settings, and every in-memory
+hard referencer found by UE 4.27's `FReferencerFinder` with inner-object
+references excluded. This is a deletion preflight, not proof that a reference
+can be rewritten automatically.
+
+Conversion is deliberately scoped to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors
 observed while `Zen_P` was loaded are inventoried but not modified.
 
@@ -32,6 +39,15 @@ unsupported tracks can otherwise be dropped. The first bridge deliberately
 retains the legacy Matinee actor beside the generated Level Sequence so their
 behavior can be compared before source cleanup is authorized as a separate
 migration step.
+
+This reference audit is required because Epic's 4.27 Matinee documentation
+describes Level Blueprint function nodes as the usual way to control a Matinee
+actor, while Epic's converter implementation only creates the new asset, actor,
+bindings, and tracks. It does not rewrite Blueprint nodes or copy the source
+actor's playback settings. Relevant official sources:
+
+- [Matinee User Guide (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/matinee-user-guide?application_version=4.27)
+- [Matinee to Sequencer Conversion Tool (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/converting-matinee-files-to-sequencer?application_version=4.27)
 
 The successful command writes:
 

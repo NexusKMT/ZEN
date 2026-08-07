@@ -24,6 +24,7 @@
 #include "MovieSceneTrack.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/ReferencerFinder.h"
 
 #include "MatineeToLevelSequenceLog.h"
 
@@ -176,6 +177,96 @@ TSharedRef<FJsonObject> CountsToJson(const TMap<FString, int32>& Counts)
     }
     return Json;
 }
+
+TSharedRef<FJsonObject> CaptureReferenceContext(
+    AMatineeActor* Actor,
+    const FString& LoadedMap
+)
+{
+    struct FReferencerRecord
+    {
+        FString ClassName;
+        FString ObjectPath;
+        FString PackageName;
+        bool bInsideSourceActor = false;
+        bool bOwningLevel = false;
+        bool bSamePackage = false;
+    };
+
+    TArray<UObject*> Referencees;
+    Referencees.Add(Actor);
+    const TArray<UObject*> Referencers = FReferencerFinder::GetAllReferencers(
+        Referencees,
+        nullptr,
+        EReferencerFinderFlags::SkipInnerReferences
+    );
+
+    TArray<FReferencerRecord> Records;
+    for (UObject* Referencer : Referencers)
+    {
+        if (Referencer == nullptr)
+        {
+            continue;
+        }
+
+        FReferencerRecord& Record = Records.AddDefaulted_GetRef();
+        Record.ClassName = Referencer->GetClass()->GetName();
+        Record.ObjectPath = Referencer->GetPathName();
+        Record.PackageName = Referencer->GetOutermost()->GetName();
+        Record.bInsideSourceActor = Referencer->IsIn(Actor);
+        Record.bOwningLevel = Referencer == Actor->GetLevel();
+        Record.bSamePackage = Referencer->GetOutermost() == Actor->GetOutermost();
+    }
+    Records.Sort([](const FReferencerRecord& Left, const FReferencerRecord& Right)
+    {
+        if (Left.ObjectPath == Right.ObjectPath)
+        {
+            return Left.ClassName < Right.ClassName;
+        }
+        return Left.ObjectPath < Right.ObjectPath;
+    });
+
+    TArray<TSharedPtr<FJsonValue>> ReferencerValues;
+    for (const FReferencerRecord& Record : Records)
+    {
+        TSharedPtr<FJsonObject> ReferencerJson = MakeShared<FJsonObject>();
+        ReferencerJson->SetStringField(TEXT("class"), Record.ClassName);
+        ReferencerJson->SetStringField(TEXT("objectPath"), Record.ObjectPath);
+        ReferencerJson->SetStringField(TEXT("package"), Record.PackageName);
+        ReferencerJson->SetBoolField(TEXT("insideSourceActor"), Record.bInsideSourceActor);
+        ReferencerJson->SetBoolField(TEXT("owningLevel"), Record.bOwningLevel);
+        ReferencerJson->SetBoolField(TEXT("samePackage"), Record.bSamePackage);
+        ReferencerValues.Add(MakeShared<FJsonValueObject>(ReferencerJson));
+
+        UE_LOG(
+            LogZenMatineeBridge,
+            Display,
+            TEXT("ZEN_BRIDGE_REFERENCER loaded_map=%s actor=%s class=%s path=%s same_package=%d owning_level=%d"),
+            *LoadedMap,
+            *Actor->GetActorLabel(),
+            *Record.ClassName,
+            *Record.ObjectPath,
+            Record.bSamePackage ? 1 : 0,
+            Record.bOwningLevel ? 1 : 0
+        );
+    }
+
+    TSharedRef<FJsonObject> Context = MakeShared<FJsonObject>();
+    Context->SetStringField(TEXT("loadedMap"), LoadedMap);
+    Context->SetNumberField(TEXT("referencerCount"), ReferencerValues.Num());
+    Context->SetArrayField(TEXT("referencers"), ReferencerValues);
+
+    UE_LOG(
+        LogZenMatineeBridge,
+        Display,
+        TEXT("ZEN_BRIDGE_REFERENCE_CONTEXT loaded_map=%s source_map=%s actor=%s referencers=%d"),
+        *LoadedMap,
+        *Actor->GetOutermost()->GetName(),
+        *Actor->GetActorLabel(),
+        ReferencerValues.Num()
+    );
+    return Context;
+}
 }
 
 UZenMatineeBridgeCommandlet::UZenMatineeBridgeCommandlet()
@@ -268,6 +359,8 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     TMap<FString, int32> SourceTrackCounts;
     TMap<FString, int32> SequenceTrackCounts;
     TSet<FString> InventoriedActors;
+    TMap<FString, TSharedPtr<FJsonObject>> InventoryEntriesByActor;
+    TMap<FString, TArray<TSharedPtr<FJsonValue>>> ReferenceContextsByActor;
     TArray<TSharedPtr<FJsonValue>> MatineeInventory;
     TArray<TSharedPtr<FJsonValue>> ConverterWarningMessages;
     TArray<TSharedPtr<FJsonValue>> GeneratedSequences;
@@ -299,14 +392,20 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
                 ? Actor->GetLevel()->GetOutermost()->GetName()
                 : FString();
             const FString ActorKey = ActorMap + TEXT(":") + Actor->GetName();
+            const FString LoadedMap = World->GetOutermost()->GetName();
+            const bool bFirstEncounter = !InventoriedActors.Contains(ActorKey);
 
-            if (InventoriedActors.Contains(ActorKey))
+            ReferenceContextsByActor.FindOrAdd(ActorKey).Add(
+                MakeShared<FJsonValueObject>(CaptureReferenceContext(Actor, LoadedMap))
+            );
+
+            if (!bFirstEncounter)
             {
                 UE_LOG(
                     LogZenMatineeBridge,
                     Display,
                     TEXT("ZEN_BRIDGE_MATINEE_DUPLICATE loaded_map=%s source_map=%s actor=%s"),
-                    *World->GetOutermost()->GetName(),
+                    *LoadedMap,
                     *ActorMap,
                     *ActorLabel
                 );
@@ -324,6 +423,20 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             InventoryEntry->SetBoolField(TEXT("looping"), Actor->bLooping != 0);
             InventoryEntry->SetBoolField(TEXT("rewindOnPlay"), Actor->bRewindOnPlay != 0);
             InventoryEntry->SetNumberField(TEXT("playRate"), Actor->PlayRate);
+            InventoryEntry->SetBoolField(TEXT("forceStartPositionEnabled"), Actor->bForceStartPos != 0);
+            InventoryEntry->SetNumberField(TEXT("forceStartPosition"), Actor->ForceStartPosition);
+            InventoryEntry->SetBoolField(TEXT("noResetOnRewind"), Actor->bNoResetOnRewind != 0);
+            InventoryEntry->SetBoolField(TEXT("rewindIfAlreadyPlaying"), Actor->bRewindIfAlreadyPlaying != 0);
+            InventoryEntry->SetBoolField(TEXT("disableRadioFilter"), Actor->bDisableRadioFilter != 0);
+            InventoryEntry->SetBoolField(TEXT("clientSideOnly"), Actor->bClientSideOnly != 0);
+            InventoryEntry->SetBoolField(TEXT("skipUpdateIfNotVisible"), Actor->bSkipUpdateIfNotVisible != 0);
+            InventoryEntry->SetBoolField(TEXT("skippable"), Actor->bIsSkippable != 0);
+            InventoryEntry->SetNumberField(TEXT("preferredSplitScreenNumber"), Actor->PreferredSplitScreenNum);
+            InventoryEntry->SetBoolField(TEXT("disableMovementInput"), Actor->bDisableMovementInput != 0);
+            InventoryEntry->SetBoolField(TEXT("disableLookAtInput"), Actor->bDisableLookAtInput != 0);
+            InventoryEntry->SetBoolField(TEXT("hidePlayer"), Actor->bHidePlayer != 0);
+            InventoryEntry->SetBoolField(TEXT("hideHud"), Actor->bHideHud != 0);
+            InventoryEntry->SetStringField(TEXT("controllerName"), Actor->MatineeControllerName.ToString());
 
             TMap<FString, int32> ActorSourceTrackCounts;
             CountSourceTracks(Actor, ActorSourceTrackCounts);
@@ -344,6 +457,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
                 );
             }
             MatineeInventory.Add(MakeShared<FJsonValueObject>(InventoryEntry));
+            InventoryEntriesByActor.Add(ActorKey, InventoryEntry);
 
             const bool bIsTargetMap = ActorMap == TargetMap;
             const bool bIsExpectedActor = bIsTargetMap && ActorLabel == ExpectedActor;
@@ -367,6 +481,14 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
                 bIsExpectedActor ? 1 : 0
             );
         }
+    }
+
+    for (const TPair<FString, TSharedPtr<FJsonObject>>& Pair : InventoryEntriesByActor)
+    {
+        Pair.Value->SetArrayField(
+            TEXT("referenceContexts"),
+            ReferenceContextsByActor.FindChecked(Pair.Key)
+        );
     }
 
     UE_LOG(
