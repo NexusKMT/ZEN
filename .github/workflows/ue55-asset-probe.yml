@@ -415,12 +415,50 @@ jobs:
                 -stdout -FullStdOutLogOutput -UTF8Output |
                 tee /workspace/logs/matinee-conversion.log
 
+              set +e
               "$editor" "$project" \
                 -run=ResavePackages \
                 -ProjectOnly -IgnoreChangelist \
                 -unattended -nop4 -NullRHI -NoSound \
                 -stdout -FullStdOutLogOutput -UTF8Output |
                 tee /workspace/logs/resave-packages.log
+              resave_pipeline_status=("${PIPESTATUS[@]}")
+              set -e
+
+              resave_status="${resave_pipeline_status[0]}"
+              tee_status="${resave_pipeline_status[1]}"
+              if [[ "$tee_status" != 0 ]]; then
+                echo "Failed to capture the ResavePackages log (tee status $tee_status)." >&2
+                exit "$tee_status"
+              fi
+              if [[ "$resave_status" != 0 && "$resave_status" != 1 ]]; then
+                echo "ResavePackages returned unexpected status $resave_status." >&2
+                exit "$resave_status"
+              fi
+
+              required_resave_lines=(
+                "[REPORT] 918/918 packages were considered for resaving"
+                "[REPORT] 918/918 packages were resaved"
+                "Commandlet ResavePackagesCommandlet_0 finished execution (result 0)"
+                "Success - 0 error(s), 0 warning(s)"
+                "LogExit: Exiting."
+              )
+              for required_line in "${required_resave_lines[@]}"; do
+                if ! grep -Fq -- "$required_line" /workspace/logs/resave-packages.log; then
+                  echo "ResavePackages log is missing required success evidence: $required_line" >&2
+                  exit 21
+                fi
+              done
+
+              if grep -Eiq "Exiting abnormally|Fatal error|Critical error" \
+                /workspace/logs/resave-packages.log; then
+                echo "ResavePackages log contains an abnormal or fatal exit marker." >&2
+                exit 22
+              fi
+
+              if [[ "$resave_status" == 1 ]]; then
+                echo "Accepted UE4Editor-Cmd status 1 after verifying the complete ResavePackages success report."
+              fi
             '
 
           report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report.json"
