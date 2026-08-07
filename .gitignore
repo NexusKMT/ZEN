@@ -1,0 +1,22 @@
+# Credentials and local transfer configuration
+rclone.conf
+.rclone.conf
+
+# Downloaded source bundles and archives
+*.zip
+*.7z
+*.tar
+*.tar.gz
+
+# Unreal-generated directories
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+.vs/
+
+# Local editor and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
