@@ -873,9 +873,10 @@ jobs:
           probe_log="$RUNNER_TEMP/ue55-map-probe.log"
           set +e
           # Full project + map load is much heavier than a bare engine boot.
+          # GNU timeout needs -k so ignored SIGTERM cannot hang the step forever.
           # Keep the licensed bridge output read-only and open a writable probe
           # root that symlinks Content back at the converted assets.
-          timeout 900s docker run --rm \
+          timeout -k 60s 1800s docker run --rm \
             --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
             "$UE55_IMAGE" \
             bash -lc '
@@ -915,7 +916,7 @@ jobs:
               # Hyphenated UE env vars are not valid bash identifiers; pass via env(1).
               export XDG_RUNTIME_DIR="$runtime_dir"
 
-              env                 "UE-LocalDataCachePath=$ddc_dir"                 /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor                 "$probe_root/EpicZenGarden.uproject"                 /Game/Maps/Zen_Movie                 -unattended -NullRHI -NoSound -NoSplash -NoP4                 -stdout -FullStdOutLogOutput -UTF8Output                 -ABSLOG=/tmp/ue55-zen-movie-abslog.log                 -ExecCmds=Quit
+              env                 "UE-LocalDataCachePath=$ddc_dir"                 /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor                 "$probe_root/EpicZenGarden.uproject"                 /Game/Maps/Zen_Movie                 -unattended -BuildMachine -NullRHI -NoSound -NoSplash -NoP4                 -stdout -FullStdOutLogOutput -UTF8Output                 -ABSLOG=/tmp/ue55-zen-movie-abslog.log                 -ExecCmds=Quit
             ' > "$probe_log" 2>&1
           probe_status="$?"
           set -e
