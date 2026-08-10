@@ -62,9 +62,8 @@ chain. This name-based dispatch avoids serializing a LevelScriptActor literal
 or its map-owned generated class into the standalone Level Sequence package.
 Level Blueprint Play calls that targeted the legacy Matinee actor are
 retargeted through the generated LevelSequenceActor player. Playback settings
-such as force-start time are copied onto the LevelSequenceActor. The legacy
-Matinee actor and MatineeController nodes remain for comparison until a later
-cleanup step.
+such as force-start time are copied onto the LevelSequenceActor. By default,
+the legacy Matinee actor and MatineeController node remain for comparison.
 After both Blueprint rewrites compile, the report captures the final Level
 Blueprint graphs separately from the preflight snapshots. It requires exactly
 the seven `ZenSeq_*` custom events, proves that each event reaches the same
@@ -81,6 +80,26 @@ not accepted as evidence that UE 5.5 can load the conversion output.
 An unconnected actor literal is still a serialized hard reference. It is
 reported and must be removed during graph cleanup even though it has no runtime
 behavior to translate.
+
+Source cleanup is an explicit opt-in through `-RemoveSourceMatinee`, passed by
+the workflow only when `remove_source_matinee=true`. After the post-rewrite
+audit and explicit Level Sequence package save, the commandlet requires exactly
+one Controller for the target source Actor and exactly one source-Actor literal
+with zero pin links. It deletes those two Blueprint nodes, recompiles without a
+Blueprint error, and verifies the final graph contains no target Controller,
+source-Actor literal, or Matinee `Play` call. It also rechecks all seven
+`ZenSeq_*` first-hop destinations before deleting the target Actor from the
+world. After deletion it proves the generated Sequence Actor remains unique,
+revalidates the complete `LevelSequenceActor -> GetSequencePlayer -> Play` data
+and execution chain, and captures the resulting graph.
+
+This deletion is scoped only to
+`/Game/Maps/Zen_Movie:MatineeActor_Movie` in the workflow's writable UE 4.27
+copy. The clean expanded UE 4.23 input is never overwritten, and the two
+inventoried actors in `Zen_P` remain untouched. When the cleaned output is
+opened by the UE 5.5.4 probe, any `CreateExport` warning is a hard failure;
+retained-source mode continues to require its exact three known transitional
+warnings.
 
 Conversion is deliberately scoped to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors

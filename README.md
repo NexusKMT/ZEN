@@ -32,8 +32,9 @@ this public repository. It:
    builds the repository's bridge commandlet with Epic's documented
    `ghcr.io/epicgames/unreal-engine:dev-4.27` image, verifies that the image
    contains UE 4.27.2, inventories all Matinee actors, converts only
-   `/Game/Maps/Zen_Movie:MatineeActor_Movie`, retains that legacy actor for
-   comparison, and resaves the project with UE 4.27.2;
+   `/Game/Maps/Zen_Movie:MatineeActor_Movie`, retains that legacy actor by
+   default or removes it through an explicit audited input, and resaves the
+   runner-local project copy with UE 4.27.2;
 7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image,
    starts a Python commandlet against the completed UE 4.27 output, and loads
    both `/Game/Maps/Zen_Movie` and its generated Level Sequence while Content
@@ -47,8 +48,11 @@ for UE 4.27's exact, captured Fade false positive when the generated Fade track
 is independently verified. Its post-rewrite audit also requires all seven
 Level Blueprint event entries to retain their original first-hop behavior,
 requires the complete LevelSequenceActor player data/execution chain, and
-requires zero target Blueprint Matinee `Play` calls or compile errors. Source
-Matinee cleanup remains a separate audited decision after functional comparison. See
+requires zero target Blueprint Matinee `Play` calls or compile errors. With
+`remove_source_matinee=true`, the commandlet additionally requires exactly one
+target Controller and one unconnected source-Actor literal, removes both nodes
+and the target source Actor, recompiles, and proves all seven first-hop event
+paths and the complete Level Sequence playback chain still match. See
 [`automation/ue427/README.md`](automation/ue427/README.md) for its boundary and
 implementation rationale.
 
@@ -101,10 +105,23 @@ or upgrade licensed assets. Engine-stage project outputs remain runner-local
 and are not written back to OneDrive. GitHub artifacts contain only the JSON
 migration audit and the text UE 4.27/5.5 probe logs.
 
-Because source cleanup is a later audited gate, the 5.5.4 probe currently
-requires the exact three orphan-export warnings produced by the retained source
-Matinee object. A missing, changed, or additional `CreateExport` warning fails
-the run; those warnings must reach zero when source cleanup is enabled.
+Run the source-cleanup gate only after the retained-source comparison has
+passed:
+
+```bash
+gh workflow run ue55-asset-probe.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field run_ue427_bridge=true \
+  --field remove_source_matinee=true \
+  --field run_ue_container=true
+```
+
+The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
+only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
+In retained-source mode, the UE 5.5.4 probe requires the exact three known
+orphan-export warnings. In cleanup mode it requires zero `CreateExport`
+warnings. A missing, changed, or additional expected warning fails either mode.
 
 Epic's public container documentation does not enumerate private patch tags.
 The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must

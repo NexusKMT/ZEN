@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: false
+      remove_source_matinee:
+        description: Remove the converted source Matinee and its target Blueprint references after the audited rewrite
+        required: true
+        type: boolean
+        default: false
       run_ue_container:
         description: Load /Game/Maps/Zen_Movie in UE 5.5.4 against the completed UE 4.27 bridge output
         required: true
@@ -49,6 +54,13 @@ jobs:
         shell: bash
         run: |
           echo '::error::UE 5.5.4 validation requires run_ue427_bridge=true; direct UE 4.23 to UE 5.5.4 is forbidden.'
+          exit 1
+
+      - name: Enforce the source cleanup order
+        if: ${{ inputs.remove_source_matinee && !inputs.run_ue427_bridge }}
+        shell: bash
+        run: |
+          echo '::error::Source Matinee cleanup requires run_ue427_bridge=true and cannot modify the original UE 4.23 input.'
           exit 1
 
       - name: Report initial runner capacity
@@ -405,12 +417,17 @@ jobs:
               set -euo pipefail
               editor=/home/ue4/UnrealEngine/Engine/Binaries/Linux/UE4Editor-Cmd
               project=/workspace/EpicZenGarden/EpicZenGarden.uproject
+              cleanup_args=()
+              if [[ "${{ inputs.remove_source_matinee }}" == "true" ]]; then
+                cleanup_args+=(-RemoveSourceMatinee)
+              fi
 
               "$editor" "$project" \
                 -run=ZenMatineeBridge \
                 -TargetMap=/Game/Maps/Zen_Movie \
                 -ExpectedActor=MatineeActor_Movie \
                 -ExpectedMatinees=1 \
+                "${cleanup_args[@]}" \
                 -unattended -nop4 -nosplash -NullRHI -NoSound \
                 -stdout -FullStdOutLogOutput -UTF8Output |
                 tee /workspace/logs/matinee-conversion.log
@@ -469,7 +486,8 @@ jobs:
           test -f "$report"
           jq empty "$report"
           jq --exit-status \
-            --arg known_warning "Unsupported track 'Fade'." '
+            --arg known_warning "Unsupported track 'Fade'." \
+            --argjson source_cleanup_requested '${{ inputs.remove_source_matinee }}' '
             def actor($map; $name):
               first(.matineeInventory[] | select(.map == $map and .actor == $name));
             def valid_reference_contexts:
@@ -502,8 +520,14 @@ jobs:
             (.matineeInventory | length) == 3 and
             .matineesFound == 1 and
             .matineesConverted == 1 and
-            .sourceActorsRetained == 1 and
-            .sourceActorsRemoved == 0 and
+            .sourceCleanupRequested == $source_cleanup_requested and
+            (if $source_cleanup_requested then
+              .sourceActorsRetained == 0 and
+              .sourceActorsRemoved == 1
+            else
+              .sourceActorsRetained == 1 and
+              .sourceActorsRemoved == 0
+            end) and
             .conversionWarnings == 1 and
             .knownConversionWarnings == 1 and
             .unexpectedConversionWarnings == 0 and
@@ -777,6 +801,104 @@ jobs:
                   )
                 )
               ) and
+              (.sourceCleanup |
+                .requested == $source_cleanup_requested and
+                if $source_cleanup_requested then
+                  .applied == true and
+                  .verified == true and
+                  .sourceActorPath == "/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie" and
+                  .controllersRemoved == 1 and
+                  .sourceActorLiteralsRemoved == 1 and
+                  .sourceActorLiteralLinkCountBeforeRemoval == 0 and
+                  .remainingTargetControllerCount == 0 and
+                  .remainingTargetLiteralCount == 0 and
+                  .remainingMatineePlayCallCount == 0 and
+                  .sequencePlayerPlayCallCount == 1 and
+                  .validSequencePlaybackChainCount == 1 and
+                  .remainingWorldActorCount == 0 and
+                  .sequenceActorCount == 1 and
+                  .expectedCustomEventCount == 7 and
+                  .verifiedCustomEventCount == 7 and
+                  .eventAuditCount == 7 and
+                  (.events | length) == 7 and
+                  .allEventFirstHopsPreserved == true and
+                  .levelBlueprintHasCompileError == false and
+                  (.levelBlueprintStatus | type) == "number" and
+                  .graphCount == 1 and
+                  (.graphs | length) == 1 and
+                  .graphs[0].package == "/Game/Maps/Zen_Movie" and
+                  .graphs[0].nodeCount == 27 and
+                  .graphs[0].nodeCount == (.graphs[0].nodes | length) and
+                  ([.events[].customEventName] | sort) == [
+                    "ZenSeq_ActivateAmbient",
+                    "ZenSeq_DeactivateSim",
+                    "ZenSeq_DisableFish",
+                    "ZenSeq_EnableFish",
+                    "ZenSeq_FadeOutMix",
+                    "ZenSeq_Fountain",
+                    "ZenSeq_SwitchLevel"
+                  ] and
+                  all(.events[];
+                    .matchingCustomEventCount == 1 and
+                    .firstHopsPreserved == true and
+                    (.expectedFirstHops | length) == 1 and
+                    .actualFirstHops == .expectedFirstHops and
+                    (.eventObjectPath | length) > 0
+                  ) and
+                  ([
+                    .graphs[].nodes[] |
+                    select(
+                      .class == "K2Node_CustomEvent" and
+                      (.eventName | startswith("ZenSeq_"))
+                    ) |
+                    .eventName
+                  ] | sort) == [
+                    "ZenSeq_ActivateAmbient",
+                    "ZenSeq_DeactivateSim",
+                    "ZenSeq_DisableFish",
+                    "ZenSeq_EnableFish",
+                    "ZenSeq_FadeOutMix",
+                    "ZenSeq_Fountain",
+                    "ZenSeq_SwitchLevel"
+                  ] and
+                  ([
+                    .graphs[].nodes[] |
+                    select(.class == "K2Node_MatineeController")
+                  ] | length) == 0 and
+                  ([
+                    .graphs[].nodes[] |
+                    select(
+                      .class == "K2Node_Literal" and
+                      .referencedObject == "/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
+                    )
+                  ] | length) == 0 and
+                  ([
+                    .graphs[].nodes[] |
+                    select(
+                      .class == "K2Node_Literal" and
+                      .referencedObject == $audit.levelSequenceActor.actorPath
+                    )
+                  ] | length) == 1 and
+                  ([
+                    .graphs[].nodes[] |
+                    select(
+                      .class == "K2Node_CallFunction" and
+                      .functionName == "GetSequencePlayer"
+                    )
+                  ] | length) == 1 and
+                  ([
+                    .graphs[].nodes[] |
+                    select(
+                      .class == "K2Node_CallFunction" and
+                      .functionName == "Play" and
+                      .functionOwnerClass == "/Script/MovieScene.MovieSceneSequencePlayer"
+                    )
+                  ] | length) == 1
+                else
+                  .applied == false and
+                  .verified == false
+                end
+              ) and
               .levelSequenceActor.playbackSettings.startTime > 0 and
               .sourceEventTrackCount == 1 and
               .targetEventTrackCount == 1 and
@@ -950,6 +1072,10 @@ jobs:
           post_rewrite_events="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.zenSeqCustomEventCount' "$report")"
           post_rewrite_chains="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.validSequencePlaybackChainCount' "$report")"
           post_rewrite_matinee_plays="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.matineePlayCallCount' "$report")"
+          source_retained="$(jq '.sourceActorsRetained' "$report")"
+          source_removed="$(jq '.sourceActorsRemoved' "$report")"
+          source_cleanup_verified="$(jq '.generatedSequenceAudits[0].sourceCleanup.verified' "$report")"
+          cleanup_final_events="$(jq '.generatedSequenceAudits[0].sourceCleanup.verifiedCustomEventCount // 0' "$report")"
           sequence_actor="$(jq -r '.generatedSequenceAudits[0].levelSequenceActor.actorPath' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
@@ -962,7 +1088,8 @@ jobs:
             printf '| Unique Matinee actors inventoried | `%s` |\n' "$matinees_discovered"
             printf '| Converted target | `%s:%s` |\n' "$target_map" "$target_actor"
             echo '| Matinee actors converted | `1` |'
-            echo '| Source Matinee actors retained | `1` |'
+            printf '| Source Matinee actors retained / removed | `%s` / `%s` |\n' \
+              "$source_retained" "$source_removed"
             printf '| Generated sequence | `%s` |\n' "$sequence"
             printf '| Converter warnings (total / known / unexpected) | `%s / %s / %s` |\n' \
               "$warnings" "$known_warnings" "$unexpected_warnings"
@@ -982,6 +1109,8 @@ jobs:
               "$event_rewrite_applied" "$playback_rewrite_count"
             printf '| Final Level Blueprint events / valid playback chains / Matinee Play calls | `%s` / `%s` / `%s` |\n' \
               "$post_rewrite_events" "$post_rewrite_chains" "$post_rewrite_matinee_plays"
+            printf '| Source cleanup verified / preserved event entries | `%s` / `%s` |\n' \
+              "$source_cleanup_verified" "$cleanup_final_events"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1158,14 +1287,25 @@ jobs:
             fi
           fi
 
-          # UE 5.5 no longer has Matinee classes. While the source actor remains
-          # intentionally serialized for the next cleanup gate, require the
-          # exact three observed orphan-export warnings and reject any drift.
-          expected_create_export_warnings=(
-            "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
-            "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie.InterpData_0"
-            "CreateExport: Failed to load Outer for resource 'SceneComp': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
-          )
+          # Retained-source mode requires the exact known transitional set.
+          # Cleanup mode requires that same set to reach zero without ignoring
+          # any changed or newly introduced CreateExport warning.
+          expected_create_export_warnings=()
+          if [[ "${{ inputs.remove_source_matinee }}" != "true" ]]; then
+            expected_create_export_warnings=(
+              "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
+              "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie.InterpData_0"
+              "CreateExport: Failed to load Outer for resource 'SceneComp': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
+            )
+          fi
+          if grep -F 'CreateExport:' "$probe_log" |
+            grep -Fvq 'LoadErrors: Warning: CreateExport:'
+          then
+            echo '::error::The UE 5.5.4 probe produced a CreateExport line outside the audited warning format.'
+            grep -F 'CreateExport:' "$probe_log" |
+              grep -Fv 'LoadErrors: Warning: CreateExport:' || true
+            exit 1
+          fi
           observed_create_export_warnings=()
           while IFS= read -r warning_line; do
             warning="${warning_line#*LoadErrors: Warning: }"
@@ -1238,7 +1378,8 @@ jobs:
             echo '- Bridge project mount: read-only'
             echo '- Probe project root: writable shell with Content symlink'
             echo '- Map: `/Game/Maps/Zen_Movie`'
-            echo '- Transitional source Matinee export warnings: `3` (exact set verified)'
+            printf '%s\n' \
+              "- Transitional source Matinee export warnings: \`${#observed_create_export_warnings[@]}\` (exact set verified)"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the UE 5.5.4 map probe log
