@@ -65,6 +65,14 @@ retargeted through the generated LevelSequenceActor player. Playback settings
 such as force-start time are copied onto the LevelSequenceActor. The legacy
 Matinee actor and MatineeController nodes remain for comparison until a later
 cleanup step.
+After both Blueprint rewrites compile, the report captures the final Level
+Blueprint graphs separately from the preflight snapshots. It requires exactly
+the seven `ZenSeq_*` custom events, proves that each event reaches the same
+first-hop execution pin as its source MatineeController output, proves the
+LevelSequenceActor literal and `GetSequencePlayer` data chain into `Play`, and
+requires the preserved incoming and outgoing execution links. Any remaining
+Matinee `Play` call in the target Level Blueprint or either Blueprint compile
+status reporting an error fails the commandlet and the workflow audit.
 The generated Level Sequence package is then saved explicitly and its on-disk
 size is verified before the bridge reports success; an in-memory asset path is
 not accepted as evidence that UE 5.5 can load the conversion output.

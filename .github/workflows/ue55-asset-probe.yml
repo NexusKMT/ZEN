@@ -660,6 +660,123 @@ jobs:
               ) and
               .playbackRewriteResult.applied == true and
               .playbackRewriteResult.retargetedPlayCount >= 1 and
+              (.postRewriteLevelBlueprint |
+                . as $post |
+                .verified == true and
+                .package == "/Game/Maps/Zen_Movie" and
+                .levelBlueprintHasCompileError == false and
+                .directorBlueprintHasCompileError == false and
+                (.levelBlueprintStatus | type) == "number" and
+                (.directorBlueprintStatus | type) == "number" and
+                .graphCount == (.graphs | length) and
+                .graphCount > 0 and
+                all(.graphs[];
+                  .package == "/Game/Maps/Zen_Movie" and
+                  .nodeCount == (.nodes | length) and
+                  .nodeCount > 0
+                ) and
+                .expectedZenSeqCustomEventCount == 7 and
+                .zenSeqCustomEventCount == 7 and
+                .eventAuditCount == 7 and
+                (.events | length) == 7 and
+                .allEventFirstHopsMatch == true and
+                ([.events[].sourceEventName] | sort) == [
+                  "ActivateAmbient",
+                  "DeactivateSim",
+                  "DisableFish",
+                  "EnableFish",
+                  "FadeOutMix",
+                  "Fountain",
+                  "SwitchLevel"
+                ] and
+                ([.events[].customEventName] | sort) == [
+                  "ZenSeq_ActivateAmbient",
+                  "ZenSeq_DeactivateSim",
+                  "ZenSeq_DisableFish",
+                  "ZenSeq_EnableFish",
+                  "ZenSeq_FadeOutMix",
+                  "ZenSeq_Fountain",
+                  "ZenSeq_SwitchLevel"
+                ] and
+                all(.events[];
+                  . as $event |
+                  .matchingCustomEventCount == 1 and
+                  .firstHopsMatch == true and
+                  .controllerFirstHopCount == 1 and
+                  .customEventFirstHopCount == 1 and
+                  .controllerFirstHops == .customEventFirstHops and
+                  (.eventObjectPath | length) > 0 and
+                  (.graphPath | length) > 0 and
+                  any($post.graphs[].nodes[];
+                    .objectPath == $event.eventObjectPath and
+                    .class == "K2Node_CustomEvent" and
+                    .eventName == $event.customEventName and
+                    any(.pins[];
+                      .name == "then" and
+                      .direction == "output" and
+                      .category == "exec" and
+                      .linkCount == 1
+                    )
+                  )
+                ) and
+                ([
+                  .graphs[].nodes[] |
+                  select(
+                    .class == "K2Node_CustomEvent" and
+                    (.eventName | startswith("ZenSeq_"))
+                  ) |
+                  .eventName
+                ] | sort) == [
+                  "ZenSeq_ActivateAmbient",
+                  "ZenSeq_DeactivateSim",
+                  "ZenSeq_DisableFish",
+                  "ZenSeq_EnableFish",
+                  "ZenSeq_FadeOutMix",
+                  "ZenSeq_Fountain",
+                  "ZenSeq_SwitchLevel"
+                ] and
+                .matineePlayCallCount == 0 and
+                .sourceMatineePlayCallCount == 0 and
+                ([
+                  .graphs[].nodes[] |
+                  select(
+                    .class == "K2Node_CallFunction" and
+                    .functionName == "Play" and
+                    .functionOwnerClass == "/Script/Engine.MatineeActor"
+                  )
+                ] | length) == 0 and
+                .sequencePlayerPlayCallCount == 1 and
+                .validSequencePlaybackChainCount == 1 and
+                (.playbackChains | length) == 1 and
+                all(.playbackChains[];
+                  . as $chain |
+                  .dataChainValid == true and
+                  .executionChainValid == true and
+                  .playSelfLinkCount == 1 and
+                  .matchingGetSequencePlayerLinks == 1 and
+                  .getSequencePlayerSelfLinkCount == 1 and
+                  .matchingSequenceActorLiterals == 1 and
+                  .incomingExecCount == 1 and
+                  .outgoingExecCount == 1 and
+                  (.incomingExec | length) == 1 and
+                  (.outgoingExec | length) == 1 and
+                  any($post.graphs[].nodes[];
+                    .objectPath == $chain.playNode and
+                    .class == "K2Node_CallFunction" and
+                    .functionName == "Play"
+                  ) and
+                  any($post.graphs[].nodes[];
+                    .objectPath == $chain.getSequencePlayerNode and
+                    .class == "K2Node_CallFunction" and
+                    .functionName == "GetSequencePlayer"
+                  ) and
+                  any($post.graphs[].nodes[];
+                    .objectPath == $chain.sequenceActorLiteralNode and
+                    .class == "K2Node_Literal" and
+                    .referencedObject == $audit.levelSequenceActor.actorPath
+                  )
+                )
+              ) and
               .levelSequenceActor.playbackSettings.startTime > 0 and
               .sourceEventTrackCount == 1 and
               .targetEventTrackCount == 1 and
@@ -830,6 +947,9 @@ jobs:
           event_rewrite_plans="$(jq '.generatedSequenceAudits[0].eventRewritePlan.eventPlanCount' "$report")"
           event_rewrite_applied="$(jq '.generatedSequenceAudits[0].eventRewriteResult.applied' "$report")"
           playback_rewrite_count="$(jq '.generatedSequenceAudits[0].playbackRewriteResult.retargetedPlayCount' "$report")"
+          post_rewrite_events="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.zenSeqCustomEventCount' "$report")"
+          post_rewrite_chains="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.validSequencePlaybackChainCount' "$report")"
+          post_rewrite_matinee_plays="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.matineePlayCallCount' "$report")"
           sequence_actor="$(jq -r '.generatedSequenceAudits[0].levelSequenceActor.actorPath' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
@@ -860,6 +980,8 @@ jobs:
               "$event_rewrite_plans" "$sequence_actor"
             printf '| Event/playback rewrite applied / plays retargeted | `%s` / `%s` |\n' \
               "$event_rewrite_applied" "$playback_rewrite_count"
+            printf '| Final Level Blueprint events / valid playback chains / Matinee Play calls | `%s` / `%s` / `%s` |\n' \
+              "$post_rewrite_events" "$post_rewrite_chains" "$post_rewrite_matinee_plays"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
