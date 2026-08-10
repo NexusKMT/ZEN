@@ -26,6 +26,7 @@
 #include "K2Node_MatineeController.h"
 #include "Engine/LevelScriptBlueprint.h"
 #include "K2Node_CustomEvent.h"
+#include "Kismet/KismetSystemLibrary.h"
 #include "MovieSceneSequencePlayer.h"
 #include "K2Node_Variable.h"
 #include "Matinee/InterpData.h"
@@ -101,6 +102,35 @@ public:
 
 private:
     TArray<FString> Warnings;
+};
+
+class FSaveErrorCapture final : public FOutputDevice
+{
+public:
+    virtual void Serialize(
+        const TCHAR* Message,
+        ELogVerbosity::Type Verbosity,
+        const FName& Category
+    ) override
+    {
+        if (Verbosity <= ELogVerbosity::Error)
+        {
+            Errors.Add(FString::Printf(TEXT("%s: %s"), *Category.ToString(), Message));
+        }
+    }
+
+    bool HasErrors() const
+    {
+        return Errors.Num() > 0;
+    }
+
+    FString JoinErrors() const
+    {
+        return FString::Join(Errors, TEXT(" | "));
+    }
+
+private:
+    TArray<FString> Errors;
 };
 
 void CountSourceTrack(UInterpTrack* Track, TMap<FString, int32>& Counts)
@@ -1147,9 +1177,7 @@ bool ApplyDirectorEventRewrite(
 
     ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(
         SourceActor->GetLevel() != nullptr ? SourceActor->GetLevel()->GetLevelScriptBlueprint(true) : nullptr);
-    ALevelScriptActor* LevelScriptActor = SourceActor->GetLevel() != nullptr
-        ? SourceActor->GetLevel()->GetLevelScriptActor() : nullptr;
-    if (LevelBlueprint == nullptr || LevelScriptActor == nullptr)
+    if (LevelBlueprint == nullptr)
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_level_script_missing"));
         return false;
@@ -1194,11 +1222,11 @@ bool ApplyDirectorEventRewrite(
     if (Events.Num() != SourceTracks[0].Track->EventTrack.Num()) { return false; }
 
     const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
-    UFunction* RemoteEventFunction = ALevelScriptActor::StaticClass()->FindFunctionByName(
-        GET_FUNCTION_NAME_CHECKED(ALevelScriptActor, RemoteEvent));
-    if (RemoteEventFunction == nullptr)
+    UFunction* ExecuteConsoleCommandFunction = UKismetSystemLibrary::StaticClass()->FindFunctionByName(
+        GET_FUNCTION_NAME_CHECKED(UKismetSystemLibrary, ExecuteConsoleCommand));
+    if (ExecuteConsoleCommandFunction == nullptr)
     {
-        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR remote_event_function_missing"));
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR execute_console_command_function_missing"));
         return false;
     }
 
@@ -1207,23 +1235,8 @@ bool ApplyDirectorEventRewrite(
     LevelBlueprint->Modify();
     ControllerGraph->Modify();
 
-    UK2Node_Literal* LsaLiteral = NewObject<UK2Node_Literal>(SequencerEventsGraph);
-    SequencerEventsGraph->AddNode(LsaLiteral, false, false);
-    LsaLiteral->CreateNewGuid();
-    LsaLiteral->PostPlacedNewNode();
-    LsaLiteral->SetObjectRef(LevelScriptActor);
-    LsaLiteral->AllocateDefaultPins();
-    LsaLiteral->NodePosX = -300;
-    LsaLiteral->NodePosY = 0;
-    UEdGraphPin* LsaLiteralOut = LsaLiteral->Pins.Num() > 0 ? LsaLiteral->Pins[0] : nullptr;
-    if (LsaLiteralOut == nullptr)
-    {
-        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR lsa_literal_pin_missing"));
-        return false;
-    }
-
     TArray<TSharedPtr<FJsonValue>> WiredEvents;
-    int32 TotalCloned = 1; // shared LSA literal
+    int32 TotalCloned = 0;
     for (int32 KeyIndex = 0; KeyIndex < Events.Num(); ++KeyIndex)
     {
         const FEventTrackKey& SourceKey = SourceTracks[0].Track->EventTrack[KeyIndex];
@@ -1304,35 +1317,34 @@ bool ApplyDirectorEventRewrite(
         }
         if (EndpointThen->LinkedTo.Num() == 0)
         {
-            UK2Node_CallFunction* RemoteCall = NewObject<UK2Node_CallFunction>(SequencerEventsGraph);
-            SequencerEventsGraph->AddNode(RemoteCall, false, false);
-            RemoteCall->CreateNewGuid();
-            RemoteCall->PostPlacedNewNode();
-            RemoteCall->FunctionReference.SetExternalMember(
-                RemoteEventFunction->GetFName(),
-                ALevelScriptActor::StaticClass());
-            RemoteCall->AllocateDefaultPins();
-            RemoteCall->NodePosX = Endpoint->NodePosX + 300;
-            RemoteCall->NodePosY = Endpoint->NodePosY;
+            UK2Node_CallFunction* ConsoleCall = NewObject<UK2Node_CallFunction>(SequencerEventsGraph);
+            SequencerEventsGraph->AddNode(ConsoleCall, false, false);
+            ConsoleCall->CreateNewGuid();
+            ConsoleCall->PostPlacedNewNode();
+            ConsoleCall->FunctionReference.SetExternalMember(
+                ExecuteConsoleCommandFunction->GetFName(),
+                UKismetSystemLibrary::StaticClass());
+            ConsoleCall->AllocateDefaultPins();
+            ConsoleCall->NodePosX = Endpoint->NodePosX + 300;
+            ConsoleCall->NodePosY = Endpoint->NodePosY;
             ++TotalCloned;
 
-            UEdGraphPin* RemoteExec = FindExecPinForRewrite(RemoteCall, EGPD_Input);
-            UEdGraphPin* RemoteSelf = RemoteCall->FindPin(UEdGraphSchema_K2::PN_Self);
-            UEdGraphPin* EventNamePin = RemoteCall->FindPin(TEXT("EventName"), EGPD_Input);
-            if (RemoteExec == nullptr || RemoteSelf == nullptr || EventNamePin == nullptr)
+            UEdGraphPin* ConsoleExec = FindExecPinForRewrite(ConsoleCall, EGPD_Input);
+            UEdGraphPin* CommandPin = ConsoleCall->FindPin(TEXT("Command"), EGPD_Input);
+            if (ConsoleExec == nullptr || CommandPin == nullptr)
             {
                 FString PinNames;
-                for (const UEdGraphPin* Pin : RemoteCall->Pins)
+                for (const UEdGraphPin* Pin : ConsoleCall->Pins)
                 {
                     if (Pin != nullptr) { PinNames += Pin->PinName.ToString() + TEXT(";"); }
                 }
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR remote_event_pins_missing pins=%s"), *PinNames);
+                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR execute_console_command_pins_missing pins=%s"), *PinNames);
                 return false;
             }
 
-            EventNamePin->DefaultValue = SeqEventName.ToString();
-            if (!Schema->TryCreateConnection(EndpointThen, RemoteExec)) { EndpointThen->MakeLinkTo(RemoteExec); }
-            if (!Schema->TryCreateConnection(LsaLiteralOut, RemoteSelf)) { LsaLiteralOut->MakeLinkTo(RemoteSelf); }
+            const FString ConsoleCommand = FString::Printf(TEXT("CE %s"), *SeqEventName.ToString());
+            CommandPin->DefaultValue = ConsoleCommand;
+            if (!Schema->TryCreateConnection(EndpointThen, ConsoleExec)) { EndpointThen->MakeLinkTo(ConsoleExec); }
         }
 
         if (EndpointThen->LinkedTo.Num() == 0)
@@ -1346,6 +1358,7 @@ bool ApplyDirectorEventRewrite(
         Wired->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
         Wired->SetStringField(TEXT("endpointObjectPath"), Endpoint->GetPathName());
         Wired->SetStringField(TEXT("levelCustomEventName"), SeqEventName.ToString());
+        Wired->SetStringField(TEXT("consoleCommand"), FString::Printf(TEXT("CE %s"), *SeqEventName.ToString()));
         Wired->SetNumberField(TEXT("clonedNodeCount"), 2);
         Wired->SetNumberField(TEXT("thenLinkCount"), EndpointThen->LinkedTo.Num());
         WiredEvents.Add(MakeShared<FJsonValueObject>(Wired));
@@ -1355,13 +1368,24 @@ bool ApplyDirectorEventRewrite(
     FKismetEditorUtilities::CompileBlueprint(LevelBlueprint);
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(DirectorBlueprint);
     FKismetEditorUtilities::CompileBlueprint(DirectorBlueprint);
+    if (LevelBlueprint->Status == BS_Error || DirectorBlueprint->Status == BS_Error)
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR event_rewrite_compile_failed level_status=%d director_status=%d"),
+            static_cast<int32>(LevelBlueprint->Status),
+            static_cast<int32>(DirectorBlueprint->Status)
+        );
+        return false;
+    }
 
     OutRewriteResult->SetBoolField(TEXT("applied"), true);
-    OutRewriteResult->SetStringField(TEXT("strategy"), TEXT("level_custom_event_dual_entry_plus_director_remote_event"));
+    OutRewriteResult->SetStringField(TEXT("strategy"), TEXT("level_custom_event_dual_entry_plus_director_console_event"));
     OutRewriteResult->SetNumberField(TEXT("wiredEventCount"), WiredEvents.Num());
     OutRewriteResult->SetNumberField(TEXT("clonedNodeCount"), TotalCloned);
     OutRewriteResult->SetArrayField(TEXT("wiredEvents"), WiredEvents);
-    UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_EVENT_REWRITE wired=%d cloned=%d strategy=dual_entry"), WiredEvents.Num(), TotalCloned);
+    UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_EVENT_REWRITE wired=%d cloned=%d strategy=console_event"), WiredEvents.Num(), TotalCloned);
     return true;
 }
 
@@ -1563,24 +1587,27 @@ bool SaveGeneratedSequencePackage(ULevelSequence* Sequence, FString& OutFilename
         FPackageName::GetAssetPackageExtension()
     );
     SequencePackage->MarkPackageDirty();
-    if (!UPackage::SavePackage(
+    FSaveErrorCapture SaveErrors;
+    const bool bSaved = UPackage::SavePackage(
         SequencePackage,
         Sequence,
         RF_Public | RF_Standalone,
         *OutFilename,
-        GError,
+        &SaveErrors,
         nullptr,
         false,
         true,
         SAVE_None
-    ))
+    );
+    if (!bSaved || SaveErrors.HasErrors())
     {
         UE_LOG(
             LogZenMatineeBridge,
             Error,
-            TEXT("ZEN_BRIDGE_ERROR sequence_save_failed package=%s filename=%s"),
+            TEXT("ZEN_BRIDGE_ERROR sequence_save_failed package=%s filename=%s details=%s"),
             *SequencePackage->GetName(),
-            *OutFilename
+            *OutFilename,
+            *SaveErrors.JoinErrors()
         );
         return false;
     }

@@ -646,13 +646,17 @@ jobs:
                 "SwitchLevel"
               ] and
               .eventRewriteResult.applied == true and
+              .eventRewriteResult.strategy == "level_custom_event_dual_entry_plus_director_console_event" and
               .eventRewriteResult.wiredEventCount == 7 and
+              .eventRewriteResult.clonedNodeCount == 14 and
               (.eventRewriteResult.wiredEvents | length) == 7 and
               all(.eventRewriteResult.wiredEvents[];
-                .thenLinkCount >= 1 and
-                .clonedNodeCount >= 1 and
+                .thenLinkCount == 1 and
+                .clonedNodeCount == 2 and
                 (.sourceEventName | length) > 0 and
-                (.endpointObjectPath | length) > 0
+                (.endpointObjectPath | length) > 0 and
+                .levelCustomEventName == ("ZenSeq_" + .sourceEventName) and
+                .consoleCommand == ("CE ZenSeq_" + .sourceEventName)
               ) and
               .playbackRewriteResult.applied == true and
               .playbackRewriteResult.retargetedPlayCount >= 1 and
@@ -691,7 +695,37 @@ jobs:
               all($audit.eventTracks[].keys[].endpointObjectPath;
                 . as $endpoint |
                 any($audit.directorBlueprint.graphs[].nodes[]; .objectPath == $endpoint)
-              )
+              ) and
+              ([
+                .directorBlueprint.graphs[].nodes[] |
+                select(
+                  .class == "K2Node_CallFunction" and
+                  .functionName == "ExecuteConsoleCommand" and
+                  .functionOwnerClass == "/Script/Engine.KismetSystemLibrary"
+                ) |
+                .pins[] |
+                select(.name == "Command" and .direction == "input") |
+                .defaultValue
+              ] | sort) == [
+                "CE ZenSeq_ActivateAmbient",
+                "CE ZenSeq_DeactivateSim",
+                "CE ZenSeq_DisableFish",
+                "CE ZenSeq_EnableFish",
+                "CE ZenSeq_FadeOutMix",
+                "CE ZenSeq_Fountain",
+                "CE ZenSeq_SwitchLevel"
+              ] and
+              ([
+                .directorBlueprint.graphs[].nodes[] |
+                select(.class == "K2Node_Literal")
+              ] | length) == 0 and
+              ([
+                .directorBlueprint.graphs[].nodes[].pins[] |
+                select(
+                  (.defaultObject | startswith("/Game/Maps/Zen_Movie")) or
+                  (.subCategoryObject | startswith("/Game/Maps/Zen_Movie"))
+                )
+              ] | length) == 0
             ) and
             (unique_blueprint_nodes("K2Node_MatineeController") | length) == 3 and
             all(unique_blueprint_nodes("K2Node_MatineeController")[];
@@ -836,6 +870,15 @@ jobs:
           name: ue427-migration-audit
           path: ${{ runner.temp }}/ue427-bridge/${{ env.PROJECT_ROOT_NAME }}/Saved/ZenMigration/ue427-bridge-report.json
           if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the UE 4.27 migration logs
+        if: ${{ always() && inputs.run_ue427_bridge }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ue427-migration-logs
+          path: ${{ runner.temp }}/ue427-logs/*.log
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Replace UE 4.27 with the licensed UE 5.5.4 image

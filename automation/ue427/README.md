@@ -56,12 +56,15 @@ plus every Level Blueprint Play/Pause/Stop/SetPosition call that still targets
 the legacy Matinee actor. It also records the generated `ALevelSequenceActor`
 path and playback settings so play-control rewrites have a concrete target.
 After the plan is captured, the bridge rewrites graphs in-place: each Director
-endpoint calls RemoteEvent into a new Level Blueprint ZenSeq_* custom event
-that joins the existing MatineeController execution chain, and Level Blueprint
-Play calls that targeted the legacy Matinee actor are retargeted through the
-generated LevelSequenceActor player. Playback settings such as force-start
-time are copied onto the LevelSequenceActor. The legacy Matinee actor and
-MatineeController nodes remain for comparison until a later cleanup step.
+endpoint executes the built-in `CE ZenSeq_*` console command for a new Level
+Blueprint custom event that joins the existing MatineeController execution
+chain. This name-based dispatch avoids serializing a LevelScriptActor literal
+or its map-owned generated class into the standalone Level Sequence package.
+Level Blueprint Play calls that targeted the legacy Matinee actor are
+retargeted through the generated LevelSequenceActor player. Playback settings
+such as force-start time are copied onto the LevelSequenceActor. The legacy
+Matinee actor and MatineeController nodes remain for comparison until a later
+cleanup step.
 The generated Level Sequence package is then saved explicitly and its on-disk
 size is verified before the bridge reports success; an in-memory asset path is
 not accepted as evidence that UE 5.5 can load the conversion output.
@@ -98,6 +101,8 @@ actor's playback settings. Relevant official sources:
 
 - [Matinee User Guide (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/matinee-user-guide?application_version=4.27)
 - [Matinee to Sequencer Conversion Tool (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/converting-matinee-files-to-sequencer?application_version=4.27)
+- [Custom Events (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/custom-events-in-unreal-engine?application_version=4.27)
+- [Execute Console Command](https://dev.epicgames.com/documentation/en-us/unreal-engine/BlueprintAPI/Development/ExecuteConsoleCommand)
 
 The successful command writes:
 

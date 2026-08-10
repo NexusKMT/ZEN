@@ -96,7 +96,7 @@ The UE 5.5 commandlet gets a writable temporary project shell, but its Content
 directory is a symbolic link into the read-only bridge mount, so it cannot save
 or upgrade licensed assets. Engine-stage project outputs remain runner-local
 and are not written back to OneDrive. GitHub artifacts contain only the JSON
-migration audit and the text UE 5.5 probe log.
+migration audit and the text UE 4.27/5.5 probe logs.
 
 Epic's public container documentation does not enumerate private patch tags.
 The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must
