@@ -402,6 +402,8 @@ jobs:
       - name: Convert Matinee and resave with UE 4.27.2
         if: ${{ inputs.run_ue427_bridge }}
         shell: bash
+        env:
+          SOURCE_CLEANUP_REQUESTED: ${{ inputs.remove_source_matinee }}
         run: |
           set -euo pipefail
 
@@ -412,13 +414,14 @@ jobs:
           docker run --rm \
             --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden" \
             --mount "type=bind,src=${log_dir},dst=/workspace/logs" \
+            --env "SOURCE_CLEANUP_REQUESTED=$SOURCE_CLEANUP_REQUESTED" \
             "$UE427_IMAGE" \
             bash -lc '
               set -euo pipefail
               editor=/home/ue4/UnrealEngine/Engine/Binaries/Linux/UE4Editor-Cmd
               project=/workspace/EpicZenGarden/EpicZenGarden.uproject
               cleanup_args=()
-              if [[ "${{ inputs.remove_source_matinee }}" == "true" ]]; then
+              if [[ "$SOURCE_CLEANUP_REQUESTED" == "true" ]]; then
                 cleanup_args+=(-RemoveSourceMatinee)
               fi
 
@@ -487,7 +490,7 @@ jobs:
           jq empty "$report"
           jq --exit-status \
             --arg known_warning "Unsupported track 'Fade'." \
-            --argjson source_cleanup_requested '${{ inputs.remove_source_matinee }}' '
+            --argjson source_cleanup_requested "$SOURCE_CLEANUP_REQUESTED" '
             def actor($map; $name):
               first(.matineeInventory[] | select(.map == $map and .actor == $name));
             def valid_reference_contexts:
@@ -1170,6 +1173,8 @@ jobs:
       - name: Probe UE 5.5.4 with the project mounted read-only
         if: ${{ inputs.run_ue_container }}
         shell: bash
+        env:
+          SOURCE_CLEANUP_REQUESTED: ${{ inputs.remove_source_matinee }}
         run: |
           set -euo pipefail
 
@@ -1291,7 +1296,7 @@ jobs:
           # Cleanup mode requires that same set to reach zero without ignoring
           # any changed or newly introduced CreateExport warning.
           expected_create_export_warnings=()
-          if [[ "${{ inputs.remove_source_matinee }}" != "true" ]]; then
+          if [[ "$SOURCE_CLEANUP_REQUESTED" != "true" ]]; then
             expected_create_export_warnings=(
               "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
               "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie.InterpData_0"
