@@ -19,7 +19,7 @@ Files are imported only when all of the following are true:
 
 1. The source repository is public.
 2. Redistribution terms are explicit and copied with the selected files.
-3. The material has a direct role in Zen Garden asset validation or headless
+3. The material has a direct role in licensed sample asset validation or headless
    Unreal automation.
 4. Version-specific code is isolated under references and is not silently
    enabled in the UE5.5.4 project.
@@ -63,7 +63,7 @@ injected into a UE5.5.4 migration.
 ### Unrelated active plugins
 
 EpicGames/deadline is for Thinkbox Deadline render-farm submission and Movie
-Render Pipeline distribution. It does not help package or migrate Zen Garden.
+Render Pipeline distribution. It does not help package or migrate this sample.
 
 ### Agent integration
 

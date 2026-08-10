@@ -45,6 +45,7 @@
 #include "Tracks/MovieSceneEventTrack.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "UObject/Package.h"
 #include "UObject/ReferencerFinder.h"
 
 #include "MatineeToLevelSequenceLog.h"
@@ -1542,6 +1543,73 @@ bool ApplyPlaybackControlRewrite(
 }
 
 
+bool SaveGeneratedSequencePackage(ULevelSequence* Sequence, FString& OutFilename)
+{
+    if (Sequence == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR sequence_save_object_missing"));
+        return false;
+    }
+
+    UPackage* SequencePackage = Sequence->GetOutermost();
+    if (SequencePackage == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR sequence_save_package_missing"));
+        return false;
+    }
+
+    OutFilename = FPackageName::LongPackageNameToFilename(
+        SequencePackage->GetName(),
+        FPackageName::GetAssetPackageExtension()
+    );
+    SequencePackage->MarkPackageDirty();
+    if (!UPackage::SavePackage(
+        SequencePackage,
+        Sequence,
+        RF_Public | RF_Standalone,
+        *OutFilename,
+        GError,
+        nullptr,
+        false,
+        true,
+        SAVE_None
+    ))
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR sequence_save_failed package=%s filename=%s"),
+            *SequencePackage->GetName(),
+            *OutFilename
+        );
+        return false;
+    }
+
+    const int64 SavedBytes = IFileManager::Get().FileSize(*OutFilename);
+    if (SavedBytes <= 0)
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR sequence_file_missing package=%s filename=%s"),
+            *SequencePackage->GetName(),
+            *OutFilename
+        );
+        return false;
+    }
+
+    UE_LOG(
+        LogZenMatineeBridge,
+        Display,
+        TEXT("ZEN_BRIDGE_SEQUENCE_SAVED package=%s filename=%s bytes=%lld"),
+        *SequencePackage->GetName(),
+        *OutFilename,
+        SavedBytes
+    );
+    return true;
+}
+
+
 bool CaptureGeneratedSequenceAudit(
     AMatineeActor* SourceActor,
     ALevelSequenceActor* SequenceActor,
@@ -2435,6 +2503,14 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             );
             return 25;
         }
+
+        FString SequenceFilename;
+        if (!SaveGeneratedSequencePackage(Sequence, SequenceFilename))
+        {
+            return 33;
+        }
+        SequenceAudit->SetStringField(TEXT("sequencePackage"), Sequence->GetOutermost()->GetName());
+        SequenceAudit->SetStringField(TEXT("sequenceFilename"), SequenceFilename);
 
         const FString SequencePath = Sequence->GetPathName();
         GeneratedSequences.Add(MakeShared<FJsonValueString>(SequencePath));

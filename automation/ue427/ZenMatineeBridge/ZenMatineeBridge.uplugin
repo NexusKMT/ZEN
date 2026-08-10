@@ -3,7 +3,7 @@
   "Version": 1,
   "VersionName": "1.0.0",
   "FriendlyName": "ZEN Matinee Bridge",
-  "Description": "Unattended UE 4.27.2 bridge for the Zen Garden Matinee sequence.",
+  "Description": "Unattended UE 4.27.2 bridge for a licensed Matinee sequence.",
   "Category": "Migration",
   "EnabledByDefault": true,
   "CanContainContent": false,

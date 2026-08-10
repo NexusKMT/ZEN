@@ -1,8 +1,8 @@
 # UE 4.27 bridge automation
 
 `ZenMatineeBridge` is a project-local editor commandlet built specifically for
-the clean UE 4.23 Zen Garden sample and compiled by the UE 4.27.2 development
-container.
+the clean licensed UE 4.23 source project and compiled by the UE 4.27.2
+development container.
 
 Epic's 4.27 `MatineeToLevelSequence` plugin does not expose its conversion
 entry point through its public module interface and creates assets through an
@@ -62,6 +62,9 @@ Play calls that targeted the legacy Matinee actor are retargeted through the
 generated LevelSequenceActor player. Playback settings such as force-start
 time are copied onto the LevelSequenceActor. The legacy Matinee actor and
 MatineeController nodes remain for comparison until a later cleanup step.
+The generated Level Sequence package is then saved explicitly and its on-disk
+size is verified before the bridge reports success; an in-memory asset path is
+not accepted as evidence that UE 5.5 can load the conversion output.
 
 
 An unconnected actor literal is still a serialized hard reference. It is

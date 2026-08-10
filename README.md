@@ -1,14 +1,14 @@
 # ZEN
 
-ZEN is the public migration and CI harness for validating the Epic Zen Garden
+ZEN is a public migration and CI harness for validating a licensed UE 4.23
 sample against newer Unreal Engine toolchains.
 
 The repository intentionally does not contain:
 
-- the Zen Garden content archive;
+- the licensed source content archive;
 - Unreal Engine source from EpicGames/UnrealEngine;
 - files from any other private Epic Games repository;
-- rclone configuration or cloud credentials.
+- cloud storage configuration or credentials.
 
 Authorized workflows will obtain the project archive at runtime. Repository
 secrets are used only to create temporary runner-local configuration.
@@ -16,15 +16,14 @@ secrets are used only to create temporary runner-local configuration.
 ## UE 4.27 to 5.5.4 migration workflow
 
 The manually dispatched `UE 4.27 to 5.5.4 migration probe` workflow stages and
-optionally converts the clean Zen Garden project without adding licensed
-content to this public repository. It:
+optionally converts the clean licensed project without adding source content to
+this public repository. It:
 
 1. reclaims the preinstalled runner payload with the same pinned
    `jlumbroso/free-disk-space` action validated by the disk-probe repository;
-2. installs the pinned rclone 1.75.0 Linux binary after verifying its release
-   archive;
+2. installs a pinned transfer client after verifying its release archive;
 3. retrieves the project ZIP, SHA-256 sidecar, and archive metadata from the
-   `ZEN/` directory of the single remote in the repository rclone config;
+   single authorized remote configured through repository secrets;
 4. compares OneDrive's server-side QuickXorHash, the local QuickXorHash, the
    SHA-256 sidecar, the local SHA-256, and the expected archive length;
 5. rejects paths or symbolic links that could escape the extraction root, then
@@ -35,8 +34,10 @@ content to this public repository. It:
    contains UE 4.27.2, inventories all Matinee actors, converts only
    `/Game/Maps/Zen_Movie:MatineeActor_Movie`, retains that legacy actor for
    comparison, and resaves the project with UE 4.27.2;
-7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image
-   and starts a read-only probe against the completed UE 4.27 output.
+7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image,
+   starts a Python commandlet against the completed UE 4.27 output, and loads
+   both `/Game/Maps/Zen_Movie` and its generated Level Sequence while Content
+   remains mounted read-only.
 
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
@@ -54,13 +55,13 @@ UE 4.23 input by this workflow.
 
 ### Required repository secrets
 
-| Secret | Used for |
+| Purpose | Requirement |
 | --- | --- |
-| `RCLONE_CONFIG` | Complete rclone configuration containing exactly one remote. Required for every run. |
+| Cloud archive access | Repository secret containing exactly one authorized remote configuration. Required for every run. |
 | `GHCR_TOKEN` | Classic GitHub PAT belonging to the repository owner, with `read:packages` and Epic Unreal Engine access. Required for either engine stage. |
 
 The workflow is `workflow_dispatch` only, so pull requests and forks cannot
-cause cloud downloads or receive secrets. The rclone config is written with
+cause cloud downloads or receive secrets. The transfer configuration is written with
 owner-only permissions below `RUNNER_TEMP` and removed when the transfer step
 ends. The downloaded archive and expanded project remain runner-local and are
 never uploaded as GitHub artifacts.
@@ -90,10 +91,12 @@ gh workflow run ue55-asset-probe.yml \
 ```
 
 Set both inputs to `true` to pull UE 5.5.4, verify its embedded engine version,
-and run only an image/read-only-mount probe against the UE 4.27 bridge output.
-This step does not open or save the converted project with UE 5.5.4. Engine-stage
-outputs remain runner-local and are not uploaded to GitHub artifacts or written
-back to OneDrive.
+and run the map and Level Sequence load probe against the UE 4.27 bridge output.
+The UE 5.5 commandlet gets a writable temporary project shell, but its Content
+directory is a symbolic link into the read-only bridge mount, so it cannot save
+or upgrade licensed assets. Engine-stage project outputs remain runner-local
+and are not written back to OneDrive. GitHub artifacts contain only the JSON
+migration audit and the text UE 5.5 probe log.
 
 Epic's public container documentation does not enumerate private patch tags.
 The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must

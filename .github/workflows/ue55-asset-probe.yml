@@ -272,7 +272,7 @@ jobs:
           df -hT / "$RUNNER_TEMP"
 
           {
-            echo '## Zen Garden asset verification'
+            echo '## Licensed asset verification'
             echo
             echo '| Check | Result |'
             echo '| --- | --- |'
@@ -438,8 +438,8 @@ jobs:
               fi
 
               required_resave_lines=(
-                "[REPORT] 918/918 packages were considered for resaving"
-                "[REPORT] 918/918 packages were resaved"
+                "[REPORT] 919/919 packages were considered for resaving"
+                "[REPORT] 919/919 packages were resaved"
                 "Commandlet ResavePackagesCommandlet_0 finished execution (result 0)"
                 "Success - 0 error(s), 0 warning(s)"
                 "LogExit: Exiting."
@@ -457,6 +457,13 @@ jobs:
                 exit 22
               fi
             '
+
+          sequence_asset="$UE427_PROJECT_DIR/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
+          if [[ ! -s "$sequence_asset" ]]; then
+            echo '::error::The bridge reported a generated Level Sequence but did not save its package to disk.'
+            exit 23
+          fi
+          echo 'Verified that the generated Level Sequence package exists on disk.'
 
           report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report.json"
           test -f "$report"
@@ -611,6 +618,8 @@ jobs:
               .mappingVerified == true and
               .sourceActor == "/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie" and
               .sequence == "/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence" and
+              .sequencePackage == "/Game/Maps/MatineeActor_MovieLevelSequence" and
+              (.sequenceFilename | endswith("/Content/Maps/MatineeActor_MovieLevelSequence.uasset")) and
               .levelSequenceActor.present == true and
               (.levelSequenceActor.actorPath | length) > 0 and
               .levelSequenceActor.levelSequencePath == "/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence" and
@@ -876,8 +885,9 @@ jobs:
           # GNU timeout needs -k so ignored SIGTERM cannot hang the step forever.
           # Keep the licensed bridge output read-only and open a writable probe
           # root that symlinks Content back at the converted assets.
-          timeout -k 60s 1800s docker run --rm \
+          timeout -k 60s 600s docker run --rm \
             --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/.github/scripts/ue55-map-probe.py,dst=/workspace/ue55-map-probe.py,readonly" \
             "$UE55_IMAGE" \
             bash -lc '
               set -euo pipefail
@@ -915,8 +925,16 @@ jobs:
               chmod 0700 "$runtime_dir"
               # Hyphenated UE env vars are not valid bash identifiers; pass via env(1).
               export XDG_RUNTIME_DIR="$runtime_dir"
+              test -r /workspace/ue55-map-probe.py
 
-              env                 "UE-LocalDataCachePath=$ddc_dir"                 /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor                 "$probe_root/EpicZenGarden.uproject"                 /Game/Maps/Zen_Movie                 -unattended -BuildMachine -NullRHI -NoSound -NoSplash -NoP4                 -stdout -FullStdOutLogOutput -UTF8Output                 -ABSLOG=/tmp/ue55-zen-movie-abslog.log                 -ExecCmds=Quit
+              env \
+                "UE-LocalDataCachePath=$ddc_dir" \
+                /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor-Cmd \
+                "$probe_root/EpicZenGarden.uproject" \
+                -run=pythonscript \
+                -script=/workspace/ue55-map-probe.py \
+                -unattended -BuildMachine -NullRHI -NoSound -NoSplash -NoP4 \
+                -stdout -FullStdOutLogOutput -UTF8Output
             ' > "$probe_log" 2>&1
           probe_status="$?"
           set -e
@@ -941,6 +959,10 @@ jobs:
             'Prepared writable UE 5.5.4 probe root with read-only Content symlink.'
             'LogInit: Engine Version: 5.5.4-37670630+UE5'
             "LogInit:  - we're running without rendering"
+            'ZEN_UE55_PROBE_MAP_LOADED world=/Game/Maps/Zen_Movie.Zen_Movie'
+            'ZEN_UE55_PROBE_SEQUENCE_LOADED asset=/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence class=LevelSequence'
+            'ZEN_UE55_PROBE_SUCCESS'
+            'Commandlet PythonScriptCommandlet_0 finished execution (result 0)'
             'LogExit: Exiting.'
           )
           for required_line in "${required_probe_lines[@]}"; do
@@ -970,15 +992,11 @@ jobs:
             fi
           fi
 
-          if ! grep -Eq 'MatineeActor_MovieLevelSequence|SequenceDirector|MovieSceneEventTrack|LevelSequence' "$probe_log"; then
-            echo '::warning::Converted Sequencer asset names were not mentioned in the UE 5.5.4 probe log; map load evidence still passed.'
-          fi
-
           if grep -Eiq \
-            'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault' \
+            'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault|LoadPackage: SkipPackage: /Game/Maps/MatineeActor_MovieLevelSequence' \
             "$probe_log"
           then
-            echo '::error::The UE 5.5.4 probe log contains an environment, abnormal-exit, or fatal marker.'
+            echo '::error::The UE 5.5.4 probe log contains a missing sequence, environment, abnormal-exit, or fatal marker.'
             exit 1
           fi
 
