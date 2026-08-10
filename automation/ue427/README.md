@@ -55,8 +55,13 @@ Blueprint execution closure currently driven by `K2Node_MatineeController`,
 plus every Level Blueprint Play/Pause/Stop/SetPosition call that still targets
 the legacy Matinee actor. It also records the generated `ALevelSequenceActor`
 path and playback settings so play-control rewrites have a concrete target.
-No Blueprint nodes are rewritten yet; the plan is the audited precondition for
-that later step.
+After the plan is captured, the bridge rewrites graphs in-place: each Director
+endpoint receives a clone of the MatineeController execution closure (with
+LevelScriptActor self pins rebound for RemoteEvent), and Level Blueprint
+Play calls that targeted the legacy Matinee actor are retargeted through the
+generated LevelSequenceActor player. Playback settings such as force-start
+time are copied onto the LevelSequenceActor. The legacy Matinee actor and
+MatineeController nodes remain for comparison until a later cleanup step.
 
 
 An unconnected actor literal is still a serialized hard reference. It is

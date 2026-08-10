@@ -636,14 +636,18 @@ jobs:
                 "Fountain",
                 "SwitchLevel"
               ] and
-              (.eventRewritePlan.playbackControlCalls | length) >= 1 and
-              all(.eventRewritePlan.playbackControlCalls[];
-                .functionName == "Play" or
-                .functionName == "Pause" or
-                .functionName == "Stop" or
-                .functionName == "SetPosition" or
-                .functionName == "Reverse"
+              .eventRewriteResult.applied == true and
+              .eventRewriteResult.wiredEventCount == 7 and
+              (.eventRewriteResult.wiredEvents | length) == 7 and
+              all(.eventRewriteResult.wiredEvents[];
+                .thenLinkCount >= 1 and
+                .clonedNodeCount >= 1 and
+                (.sourceEventName | length) > 0 and
+                (.endpointObjectPath | length) > 0
               ) and
+              .playbackRewriteResult.applied == true and
+              .playbackRewriteResult.retargetedPlayCount >= 1 and
+              .levelSequenceActor.playbackSettings.startTime > 0 and
               .sourceEventTrackCount == 1 and
               .targetEventTrackCount == 1 and
               .eventKeyCount == ([.eventTracks[].keys[]] | length) and
@@ -781,6 +785,8 @@ jobs:
           event_keys="$(jq '.generatedSequenceAudits[0].eventKeyCount' "$report")"
           event_endpoints="$(jq '.generatedSequenceAudits[0].uniqueEndpointCount' "$report")"
           event_rewrite_plans="$(jq '.generatedSequenceAudits[0].eventRewritePlan.eventPlanCount' "$report")"
+          event_rewrite_applied="$(jq '.generatedSequenceAudits[0].eventRewriteResult.applied' "$report")"
+          playback_rewrite_count="$(jq '.generatedSequenceAudits[0].playbackRewriteResult.retargetedPlayCount' "$report")"
           sequence_actor="$(jq -r '.generatedSequenceAudits[0].levelSequenceActor.actorPath' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
@@ -809,6 +815,8 @@ jobs:
               "$event_keys" "$event_endpoints"
             printf '| Event rewrite plans / LevelSequenceActor | `%s` / `%s` |\n' \
               "$event_rewrite_plans" "$sequence_actor"
+            printf '| Event/playback rewrite applied / plays retargeted | `%s` / `%s` |\n' \
+              "$event_rewrite_applied" "$playback_rewrite_count"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
