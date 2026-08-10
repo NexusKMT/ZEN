@@ -119,7 +119,10 @@ Each invocation receives an explicit target-specific source and Sequencer track
 contract. The Movie target requires Director, Fade, Sound, Event, Toggle,
 Movement, and Float tracks and their corresponding outputs. The first `Zen_P`
 target has no Sound track, so it instead requires Director, Fade, Event,
-Toggle, Movement, and Float tracks and the matching non-audio outputs.
+Toggle, Movement, and Float tracks and the matching non-audio outputs. The
+bridge separately audits Toggle key counts: a keyed source Toggle requires a
+generated Particle track, while an empty source Toggle does not require an
+empty Sequencer track.
 
 Epic's 4.27 converter emits one false-positive `Unsupported track 'Fade'.`
 warning from its generic group pass, then converts that Fade track in its

@@ -168,6 +168,41 @@ void CountSourceTracks(AMatineeActor* Actor, TMap<FString, int32>& Counts)
     }
 }
 
+void CountSourceTrackKeys(UInterpTrack* Track, TMap<FString, int32>& KeyCounts)
+{
+    if (Track == nullptr)
+    {
+        return;
+    }
+
+    KeyCounts.FindOrAdd(Track->GetClass()->GetName()) += Track->GetNumKeyframes();
+    for (UInterpTrack* SubTrack : Track->SubTracks)
+    {
+        CountSourceTrackKeys(SubTrack, KeyCounts);
+    }
+}
+
+void CountSourceTrackKeys(AMatineeActor* Actor, TMap<FString, int32>& KeyCounts)
+{
+    if (Actor == nullptr || Actor->MatineeData == nullptr)
+    {
+        return;
+    }
+
+    for (UInterpGroup* Group : Actor->MatineeData->InterpGroups)
+    {
+        if (Group == nullptr)
+        {
+            continue;
+        }
+
+        for (UInterpTrack* Track : Group->InterpTracks)
+        {
+            CountSourceTrackKeys(Track, KeyCounts);
+        }
+    }
+}
+
 struct FSourceEventTrackRecord
 {
     int32 GroupIndex = INDEX_NONE;
@@ -3497,6 +3532,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     int32 UnexpectedConversionWarnings = 0;
     bool bFoundExpectedActor = false;
     TMap<FString, int32> SourceTrackCounts;
+    TMap<FString, int32> SourceTrackKeyCounts;
     TMap<FString, int32> SequenceTrackCounts;
     TSet<FString> InventoriedActors;
     TMap<FString, TSharedPtr<FJsonObject>> InventoryEntriesByActor;
@@ -3616,6 +3652,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
             {
                 bFoundExpectedActor = true;
                 CountSourceTracks(Actor, SourceTrackCounts);
+                CountSourceTrackKeys(Actor, SourceTrackKeyCounts);
             }
 
             UE_LOG(
@@ -3740,6 +3777,27 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         {
             UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR required_sequence_track_missing"));
             return 22;
+        }
+
+        const int32 SourceToggleKeyCount =
+            SourceTrackKeyCounts.FindRef(TEXT("InterpTrackToggle"));
+        const int32 SequenceParticleTrackCount =
+            SequenceTrackCounts.FindRef(TEXT("MovieSceneParticleTrack"));
+        UE_LOG(
+            LogZenMatineeBridge,
+            Display,
+            TEXT("ZEN_BRIDGE_TOGGLE_MAPPING source_keys=%d sequence_tracks=%d"),
+            SourceToggleKeyCount,
+            SequenceParticleTrackCount
+        );
+        if (SourceToggleKeyCount > 0 && SequenceParticleTrackCount <= 0)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR keyed_toggle_output_missing")
+            );
+            return 29;
         }
 
         CopyMatineePlaybackSettingsToSequenceActor(Actor, NewActor.Get());
@@ -3974,6 +4032,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     Report->SetArrayField(TEXT("generatedSequences"), GeneratedSequences);
     Report->SetArrayField(TEXT("generatedSequenceAudits"), GeneratedSequenceAudits);
     Report->SetObjectField(TEXT("sourceTrackClasses"), CountsToJson(SourceTrackCounts));
+    Report->SetObjectField(TEXT("sourceTrackKeyCounts"), CountsToJson(SourceTrackKeyCounts));
     Report->SetObjectField(TEXT("sequenceTrackClasses"), CountsToJson(SequenceTrackCounts));
 
     FString ReportText;

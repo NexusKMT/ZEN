@@ -46,7 +46,7 @@ this public repository. It:
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
 tracks before conversion and the resulting Camera Cut, Fade, Audio, Event, and
-Particle tracks before it saves anything. Converter warnings are fatal except
+keyed Toggle outputs before it saves anything. Converter warnings are fatal except
 for UE 4.27's exact, captured Fade false positive when the generated Fade track
 is independently verified. Its post-rewrite audit also requires all seven
 Level Blueprint event entries to retain their original first-hop behavior,

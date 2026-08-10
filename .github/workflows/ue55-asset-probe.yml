@@ -453,7 +453,7 @@ jobs:
                 -ExpectedActor=MatineeActor \
                 -ExpectedMatinees=2 \
                 -RequiredSourceTracks=InterpTrackDirector,InterpTrackEvent,InterpTrackFade,InterpTrackFloatProp,InterpTrackMove,InterpTrackToggle \
-                -RequiredSequenceTracks=MovieScene3DTransformTrack,MovieSceneCameraCutTrack,MovieSceneEventTrack,MovieSceneFadeTrack,MovieSceneFloatTrack,MovieSceneParticleTrack \
+                -RequiredSequenceTracks=MovieScene3DTransformTrack,MovieSceneCameraCutTrack,MovieSceneEventTrack,MovieSceneFadeTrack,MovieSceneFloatTrack \
                 -ReportName=ue427-bridge-report-zen-p-matineeactor.json \
                 "${cleanup_args[@]}" \
                 -unattended -nop4 -nosplash -NullRHI -NoSound \

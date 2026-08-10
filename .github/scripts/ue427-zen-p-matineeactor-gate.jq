@@ -72,8 +72,7 @@ end) and
   "MovieSceneCameraCutTrack",
   "MovieSceneEventTrack",
   "MovieSceneFadeTrack",
-  "MovieSceneFloatTrack",
-  "MovieSceneParticleTrack"
+  "MovieSceneFloatTrack"
 ] and
 .sourceTrackClasses == {
   "InterpTrackMove": 2,
@@ -88,9 +87,9 @@ end) and
   "MovieSceneCameraCutTrack": 1,
   "MovieSceneEventTrack": 1,
   "MovieSceneFadeTrack": 1,
-  "MovieSceneFloatTrack": 2,
-  "MovieSceneParticleTrack": 1
+  "MovieSceneFloatTrack": 2
 } and
+.sourceTrackKeyCounts.InterpTrackToggle == 0 and
 .conversionWarnings == 1 and
 .knownConversionWarnings == 1 and
 .unexpectedConversionWarnings == 0 and
