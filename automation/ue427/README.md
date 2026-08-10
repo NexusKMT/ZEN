@@ -74,7 +74,8 @@ Matinee `Play` call in the target Level Blueprint or either Blueprint compile
 status reporting an error fails the commandlet and the workflow audit.
 The generated Level Sequence package is then saved explicitly and its on-disk
 size is verified before the bridge reports success; an in-memory asset path is
-not accepted as evidence that UE 5.5 can load the conversion output.
+not accepted as evidence that the selected UE 5 runtime can load the conversion
+output.
 
 
 An unconnected actor literal is still a serialized hard reference. It is
@@ -97,9 +98,10 @@ This deletion is scoped only to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie` in the workflow's writable UE 4.27
 copy. The clean expanded UE 4.23 input is never overwritten, and the two
 inventoried actors in `Zen_P` remain untouched. When the cleaned output is
-opened by the UE 5.5.4 probe, any `CreateExport` warning is a hard failure;
+opened by the selected UE 5 probe, any `CreateExport` warning is a hard failure;
 retained-source mode continues to require its exact three known transitional
-warnings.
+warnings. The workflow currently allows exact `5.4.4` and `5.5.4` runtime
+checks, with `5.4.4` as the default.
 
 Conversion is deliberately scoped to
 `/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors

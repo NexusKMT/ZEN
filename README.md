@@ -13,9 +13,9 @@ The repository intentionally does not contain:
 Authorized workflows will obtain the project archive at runtime. Repository
 secrets are used only to create temporary runner-local configuration.
 
-## UE 4.27 to 5.5.4 migration workflow
+## UE 4.27 to UE 5 migration workflow
 
-The manually dispatched `UE 4.27 to 5.5.4 migration probe` workflow stages and
+The manually dispatched `UE 4.27 to UE 5 migration probe` workflow stages and
 optionally converts the clean licensed project without adding source content to
 this public repository. It:
 
@@ -35,10 +35,10 @@ this public repository. It:
    `/Game/Maps/Zen_Movie:MatineeActor_Movie`, retains that legacy actor by
    default or removes it through an explicit audited input, and resaves the
    runner-local project copy with UE 4.27.2;
-7. optionally pulls Epic's `ghcr.io/epicgames/unreal-engine:dev-5.5.4` image,
-   starts a Python commandlet against the completed UE 4.27 output, and loads
-   both `/Game/Maps/Zen_Movie` and its generated Level Sequence while Content
-   remains mounted read-only.
+7. optionally pulls the exact selected Epic UE 5 development image, verifies
+   its `Build.version`, starts a Python commandlet against the completed UE 4.27
+   output, and loads both `/Game/Maps/Zen_Movie` and its generated Level
+   Sequence while Content remains mounted read-only.
 
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
@@ -57,8 +57,10 @@ paths and the complete Level Sequence playback chain still match. See
 implementation rationale.
 
 The workflow enforces the migration order. `run_ue_container=true` is rejected
-unless `run_ue427_bridge=true`, so UE 5.5.4 cannot be pointed at the original
-UE 4.23 input by this workflow.
+unless `run_ue427_bridge=true`, so the selected UE 5 runtime cannot be pointed
+at the original UE 4.23 input by this workflow. The `ue5_version` choice is
+restricted to `5.4.4` and the previously validated `5.5.4`; `5.4.4` is the
+default target.
 
 ### Required repository secrets
 
@@ -97,13 +99,14 @@ gh workflow run ue55-asset-probe.yml \
   --field run_ue_container=false
 ```
 
-Set both inputs to `true` to pull UE 5.5.4, verify its embedded engine version,
-and run the map and Level Sequence load probe against the UE 4.27 bridge output.
-The UE 5.5 commandlet gets a writable temporary project shell, but its Content
-directory is a symbolic link into the read-only bridge mount, so it cannot save
+Set `run_ue427_bridge=true` and `run_ue_container=true` to pull the selected
+UE 5 image, verify its embedded engine version, and run the map and Level
+Sequence load probe against the UE 4.27 bridge output. The UE 5 commandlet gets
+a writable temporary project shell, but its Content directory is a symbolic
+link into the read-only bridge mount, so it cannot save
 or upgrade licensed assets. Engine-stage project outputs remain runner-local
 and are not written back to OneDrive. GitHub artifacts contain only the JSON
-migration audit and the text UE 4.27/5.5 probe logs.
+migration audit and the text UE 4.27/UE 5 probe logs.
 
 Run the source-cleanup gate only after the retained-source comparison has
 passed:
@@ -114,19 +117,21 @@ gh workflow run ue55-asset-probe.yml \
   --ref main \
   --field run_ue427_bridge=true \
   --field remove_source_matinee=true \
-  --field run_ue_container=true
+  --field run_ue_container=true \
+  --field ue5_version=5.4.4
 ```
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
-In retained-source mode, the UE 5.5.4 probe requires the exact three known
+In retained-source mode, the selected UE 5 probe requires the exact three known
 orphan-export warnings. In cleanup mode it requires zero `CreateExport`
 warnings. A missing, changed, or additional expected warning fails either mode.
 
 Epic's public container documentation does not enumerate private patch tags.
-The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must
-succeed after licensed GHCR authentication, and `Engine/Build/Build.version`
-must report exactly 5.5.4 before the image is accepted.
+The workflow therefore treats both `dev-5.4.4` and `dev-5.5.4` as runtime
+assertions: the selected pull must succeed after licensed GHCR authentication,
+and `Engine/Build/Build.version` must exactly match `ue5_version` before the
+image is accepted.
 
 ## Upstream references
 
