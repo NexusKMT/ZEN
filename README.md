@@ -98,6 +98,11 @@ or upgrade licensed assets. Engine-stage project outputs remain runner-local
 and are not written back to OneDrive. GitHub artifacts contain only the JSON
 migration audit and the text UE 4.27/5.5 probe logs.
 
+Because source cleanup is a later audited gate, the 5.5.4 probe currently
+requires the exact three orphan-export warnings produced by the retained source
+Matinee object. A missing, changed, or additional `CreateExport` warning fails
+the run; those warnings must reach zero when source cleanup is enabled.
+
 Epic's public container documentation does not enumerate private patch tags.
 The workflow therefore treats `dev-5.5.4` as a runtime assertion: the pull must
 succeed after licensed GHCR authentication, and `Engine/Build/Build.version`
