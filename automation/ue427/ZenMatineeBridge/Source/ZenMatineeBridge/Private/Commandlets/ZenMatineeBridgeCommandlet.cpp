@@ -1242,19 +1242,35 @@ bool ApplyDirectorEventRewrite(
             TargetTracks.Add(EventTrack);
         }
     }
-    if (SourceTracks.Num() != 1 || TargetTracks.Num() != 1)
+    if (SourceTracks.Num() <= 0 || SourceTracks.Num() != TargetTracks.Num())
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_event_track_mismatch"));
         return false;
     }
 
-    const TArray<UMovieSceneSection*>& Sections = TargetTracks[0]->GetAllSections();
-    if (Sections.Num() != 1) { return false; }
-    const UMovieSceneEventTriggerSection* TriggerSection = Cast<UMovieSceneEventTriggerSection>(Sections[0]);
-    if (TriggerSection == nullptr) { return false; }
-    const TMovieSceneChannelData<const FMovieSceneEvent> ChannelData = TriggerSection->EventChannel.GetData();
-    const TArrayView<const FMovieSceneEvent> Events = ChannelData.GetValues();
-    if (Events.Num() != SourceTracks[0].Track->EventTrack.Num()) { return false; }
+    TSet<FName> UniqueSourceEventNames;
+    for (const FSourceEventTrackRecord& SourceTrack : SourceTracks)
+    {
+        if (SourceTrack.Track == nullptr)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_source_event_track_missing"));
+            return false;
+        }
+        for (const FEventTrackKey& SourceKey : SourceTrack.Track->EventTrack)
+        {
+            if (SourceKey.EventName.IsNone() || UniqueSourceEventNames.Contains(SourceKey.EventName))
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR rewrite_source_event_name_not_unique event=%s"),
+                    *SourceKey.EventName.ToString()
+                );
+                return false;
+            }
+            UniqueSourceEventNames.Add(SourceKey.EventName);
+        }
+    }
 
     const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
     UFunction* ExecuteConsoleCommandFunction = UKismetSystemLibrary::StaticClass()->FindFunctionByName(
@@ -1272,131 +1288,236 @@ bool ApplyDirectorEventRewrite(
 
     TArray<TSharedPtr<FJsonValue>> WiredEvents;
     int32 TotalCloned = 0;
-    for (int32 KeyIndex = 0; KeyIndex < Events.Num(); ++KeyIndex)
+    int32 GlobalEventIndex = 0;
+    for (int32 EventTrackIndex = 0; EventTrackIndex < TargetTracks.Num(); ++EventTrackIndex)
     {
-        const FEventTrackKey& SourceKey = SourceTracks[0].Track->EventTrack[KeyIndex];
-        UK2Node_CustomEvent* Endpoint = Cast<UK2Node_CustomEvent>(Events[KeyIndex].WeakEndpoint.Get());
-        UEdGraphPin* ControllerPin = Controller->FindPin(SourceKey.EventName);
-        if (Endpoint == nullptr || ControllerPin == nullptr)
+        const TArray<UMovieSceneSection*>& Sections =
+            TargetTracks[EventTrackIndex]->GetAllSections();
+        if (Sections.Num() != 1)
         {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_endpoint_or_pin_missing event=%s"), *SourceKey.EventName.ToString());
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR rewrite_event_section_count track=%d sections=%d"),
+                EventTrackIndex,
+                Sections.Num()
+            );
             return false;
         }
-        if (ControllerPin->LinkedTo.Num() == 0)
+        const UMovieSceneEventTriggerSection* TriggerSection =
+            Cast<UMovieSceneEventTriggerSection>(Sections[0]);
+        if (TriggerSection == nullptr)
         {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR controller_pin_has_no_links pin=%s"), *ControllerPin->PinName.ToString());
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR rewrite_event_trigger_section_missing track=%d"),
+                EventTrackIndex
+            );
+            return false;
+        }
+        const TMovieSceneChannelData<const FMovieSceneEvent> ChannelData =
+            TriggerSection->EventChannel.GetData();
+        const TArrayView<const FMovieSceneEvent> Events = ChannelData.GetValues();
+        if (Events.Num() != SourceTracks[EventTrackIndex].Track->EventTrack.Num())
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR rewrite_event_key_count track=%d source=%d target=%d"),
+                EventTrackIndex,
+                SourceTracks[EventTrackIndex].Track->EventTrack.Num(),
+                Events.Num()
+            );
             return false;
         }
 
-        const FName SeqEventName(*FString::Printf(TEXT("ZenSeq_%s"), *SourceKey.EventName.ToString()));
-
-        UK2Node_CustomEvent* LevelSeqEvent = nullptr;
-        for (UEdGraphNode* Node : ControllerGraph->Nodes)
+        for (int32 KeyIndex = 0; KeyIndex < Events.Num(); ++KeyIndex, ++GlobalEventIndex)
         {
-            if (UK2Node_CustomEvent* Existing = Cast<UK2Node_CustomEvent>(Node))
+            const FEventTrackKey& SourceKey =
+                SourceTracks[EventTrackIndex].Track->EventTrack[KeyIndex];
+            UK2Node_CustomEvent* Endpoint =
+                Cast<UK2Node_CustomEvent>(Events[KeyIndex].WeakEndpoint.Get());
+            UEdGraphPin* ControllerPin = Controller->FindPin(SourceKey.EventName);
+            if (Endpoint == nullptr || ControllerPin == nullptr)
             {
-                if (Existing->CustomFunctionName == SeqEventName)
-                {
-                    LevelSeqEvent = Existing;
-                    break;
-                }
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR rewrite_endpoint_or_pin_missing event=%s"),
+                    *SourceKey.EventName.ToString()
+                );
+                return false;
             }
-        }
-        if (LevelSeqEvent == nullptr)
-        {
-            LevelSeqEvent = NewObject<UK2Node_CustomEvent>(ControllerGraph);
-            ControllerGraph->AddNode(LevelSeqEvent, false, false);
-            LevelSeqEvent->CreateNewGuid();
-            LevelSeqEvent->PostPlacedNewNode();
-            LevelSeqEvent->bIsEditable = true;
-            LevelSeqEvent->CustomFunctionName = SeqEventName;
-            LevelSeqEvent->AllocateDefaultPins();
-            LevelSeqEvent->NodePosX = Controller->NodePosX - 250;
-            LevelSeqEvent->NodePosY = Controller->NodePosY + (KeyIndex * 80);
-            ++TotalCloned;
-        }
-
-        UEdGraphPin* LevelThen = FindPinByName(LevelSeqEvent, UEdGraphSchema_K2::PN_Then, EGPD_Output);
-        if (LevelThen == nullptr)
-        {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR level_seq_event_then_missing name=%s"), *SeqEventName.ToString());
-            return false;
-        }
-        for (UEdGraphPin* FirstHopInput : ControllerPin->LinkedTo)
-        {
-            if (FirstHopInput == nullptr) { continue; }
-            bool bAlreadyLinked = false;
-            for (UEdGraphPin* ExistingLink : LevelThen->LinkedTo)
+            if (ControllerPin->LinkedTo.Num() == 0)
             {
-                if (ExistingLink == FirstHopInput) { bAlreadyLinked = true; break; }
-            }
-            if (!bAlreadyLinked)
-            {
-                if (!Schema->TryCreateConnection(LevelThen, FirstHopInput))
-                {
-                    LevelThen->MakeLinkTo(FirstHopInput);
-                }
-            }
-        }
-        if (LevelThen->LinkedTo.Num() == 0)
-        {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR level_seq_event_not_joined name=%s"), *SeqEventName.ToString());
-            return false;
-        }
-
-        UEdGraphPin* EndpointThen = FindPinByName(Endpoint, UEdGraphSchema_K2::PN_Then, EGPD_Output);
-        if (EndpointThen == nullptr)
-        {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR endpoint_then_missing path=%s"), *Endpoint->GetPathName());
-            return false;
-        }
-        if (EndpointThen->LinkedTo.Num() == 0)
-        {
-            UK2Node_CallFunction* ConsoleCall = NewObject<UK2Node_CallFunction>(SequencerEventsGraph);
-            SequencerEventsGraph->AddNode(ConsoleCall, false, false);
-            ConsoleCall->CreateNewGuid();
-            ConsoleCall->PostPlacedNewNode();
-            ConsoleCall->FunctionReference.SetExternalMember(
-                ExecuteConsoleCommandFunction->GetFName(),
-                UKismetSystemLibrary::StaticClass());
-            ConsoleCall->AllocateDefaultPins();
-            ConsoleCall->NodePosX = Endpoint->NodePosX + 300;
-            ConsoleCall->NodePosY = Endpoint->NodePosY;
-            ++TotalCloned;
-
-            UEdGraphPin* ConsoleExec = FindExecPinForRewrite(ConsoleCall, EGPD_Input);
-            UEdGraphPin* CommandPin = ConsoleCall->FindPin(TEXT("Command"), EGPD_Input);
-            if (ConsoleExec == nullptr || CommandPin == nullptr)
-            {
-                FString PinNames;
-                for (const UEdGraphPin* Pin : ConsoleCall->Pins)
-                {
-                    if (Pin != nullptr) { PinNames += Pin->PinName.ToString() + TEXT(";"); }
-                }
-                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR execute_console_command_pins_missing pins=%s"), *PinNames);
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR controller_pin_has_no_links pin=%s"),
+                    *ControllerPin->PinName.ToString()
+                );
                 return false;
             }
 
-            const FString ConsoleCommand = FString::Printf(TEXT("CE %s"), *SeqEventName.ToString());
-            CommandPin->DefaultValue = ConsoleCommand;
-            if (!Schema->TryCreateConnection(EndpointThen, ConsoleExec)) { EndpointThen->MakeLinkTo(ConsoleExec); }
-        }
+            const FName SeqEventName(*FString::Printf(
+                TEXT("ZenSeq_%s"),
+                *SourceKey.EventName.ToString()
+            ));
 
-        if (EndpointThen->LinkedTo.Num() == 0)
-        {
-            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR endpoint_not_wired path=%s"), *Endpoint->GetPathName());
-            return false;
-        }
+            UK2Node_CustomEvent* LevelSeqEvent = nullptr;
+            for (UEdGraphNode* Node : ControllerGraph->Nodes)
+            {
+                if (UK2Node_CustomEvent* Existing = Cast<UK2Node_CustomEvent>(Node))
+                {
+                    if (Existing->CustomFunctionName == SeqEventName)
+                    {
+                        LevelSeqEvent = Existing;
+                        break;
+                    }
+                }
+            }
+            if (LevelSeqEvent == nullptr)
+            {
+                LevelSeqEvent = NewObject<UK2Node_CustomEvent>(ControllerGraph);
+                ControllerGraph->AddNode(LevelSeqEvent, false, false);
+                LevelSeqEvent->CreateNewGuid();
+                LevelSeqEvent->PostPlacedNewNode();
+                LevelSeqEvent->bIsEditable = true;
+                LevelSeqEvent->CustomFunctionName = SeqEventName;
+                LevelSeqEvent->AllocateDefaultPins();
+                LevelSeqEvent->NodePosX = Controller->NodePosX - 250;
+                LevelSeqEvent->NodePosY = Controller->NodePosY + (GlobalEventIndex * 80);
+                ++TotalCloned;
+            }
 
-        TSharedPtr<FJsonObject> Wired = MakeShared<FJsonObject>();
-        Wired->SetNumberField(TEXT("keyIndex"), KeyIndex);
-        Wired->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
-        Wired->SetStringField(TEXT("endpointObjectPath"), Endpoint->GetPathName());
-        Wired->SetStringField(TEXT("levelCustomEventName"), SeqEventName.ToString());
-        Wired->SetStringField(TEXT("consoleCommand"), FString::Printf(TEXT("CE %s"), *SeqEventName.ToString()));
-        Wired->SetNumberField(TEXT("clonedNodeCount"), 2);
-        Wired->SetNumberField(TEXT("thenLinkCount"), EndpointThen->LinkedTo.Num());
-        WiredEvents.Add(MakeShared<FJsonValueObject>(Wired));
+            UEdGraphPin* LevelThen = FindPinByName(
+                LevelSeqEvent,
+                UEdGraphSchema_K2::PN_Then,
+                EGPD_Output
+            );
+            if (LevelThen == nullptr)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR level_seq_event_then_missing name=%s"),
+                    *SeqEventName.ToString()
+                );
+                return false;
+            }
+            for (UEdGraphPin* FirstHopInput : ControllerPin->LinkedTo)
+            {
+                if (FirstHopInput == nullptr) { continue; }
+                bool bAlreadyLinked = false;
+                for (UEdGraphPin* ExistingLink : LevelThen->LinkedTo)
+                {
+                    if (ExistingLink == FirstHopInput) { bAlreadyLinked = true; break; }
+                }
+                if (!bAlreadyLinked)
+                {
+                    if (!Schema->TryCreateConnection(LevelThen, FirstHopInput))
+                    {
+                        LevelThen->MakeLinkTo(FirstHopInput);
+                    }
+                }
+            }
+            if (LevelThen->LinkedTo.Num() == 0)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR level_seq_event_not_joined name=%s"),
+                    *SeqEventName.ToString()
+                );
+                return false;
+            }
+
+            UEdGraphPin* EndpointThen = FindPinByName(
+                Endpoint,
+                UEdGraphSchema_K2::PN_Then,
+                EGPD_Output
+            );
+            if (EndpointThen == nullptr)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR endpoint_then_missing path=%s"),
+                    *Endpoint->GetPathName()
+                );
+                return false;
+            }
+            if (EndpointThen->LinkedTo.Num() == 0)
+            {
+                UK2Node_CallFunction* ConsoleCall =
+                    NewObject<UK2Node_CallFunction>(SequencerEventsGraph);
+                SequencerEventsGraph->AddNode(ConsoleCall, false, false);
+                ConsoleCall->CreateNewGuid();
+                ConsoleCall->PostPlacedNewNode();
+                ConsoleCall->FunctionReference.SetExternalMember(
+                    ExecuteConsoleCommandFunction->GetFName(),
+                    UKismetSystemLibrary::StaticClass()
+                );
+                ConsoleCall->AllocateDefaultPins();
+                ConsoleCall->NodePosX = Endpoint->NodePosX + 300;
+                ConsoleCall->NodePosY = Endpoint->NodePosY;
+                ++TotalCloned;
+
+                UEdGraphPin* ConsoleExec = FindExecPinForRewrite(ConsoleCall, EGPD_Input);
+                UEdGraphPin* CommandPin = ConsoleCall->FindPin(TEXT("Command"), EGPD_Input);
+                if (ConsoleExec == nullptr || CommandPin == nullptr)
+                {
+                    FString PinNames;
+                    for (const UEdGraphPin* Pin : ConsoleCall->Pins)
+                    {
+                        if (Pin != nullptr) { PinNames += Pin->PinName.ToString() + TEXT(";"); }
+                    }
+                    UE_LOG(
+                        LogZenMatineeBridge,
+                        Error,
+                        TEXT("ZEN_BRIDGE_ERROR execute_console_command_pins_missing pins=%s"),
+                        *PinNames
+                    );
+                    return false;
+                }
+
+                const FString ConsoleCommand = FString::Printf(
+                    TEXT("CE %s"),
+                    *SeqEventName.ToString()
+                );
+                CommandPin->DefaultValue = ConsoleCommand;
+                if (!Schema->TryCreateConnection(EndpointThen, ConsoleExec))
+                {
+                    EndpointThen->MakeLinkTo(ConsoleExec);
+                }
+            }
+
+            if (EndpointThen->LinkedTo.Num() == 0)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR endpoint_not_wired path=%s"),
+                    *Endpoint->GetPathName()
+                );
+                return false;
+            }
+
+            TSharedPtr<FJsonObject> Wired = MakeShared<FJsonObject>();
+            Wired->SetNumberField(TEXT("eventTrackIndex"), EventTrackIndex);
+            Wired->SetNumberField(TEXT("keyIndex"), KeyIndex);
+            Wired->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
+            Wired->SetStringField(TEXT("endpointObjectPath"), Endpoint->GetPathName());
+            Wired->SetStringField(TEXT("levelCustomEventName"), SeqEventName.ToString());
+            Wired->SetStringField(
+                TEXT("consoleCommand"),
+                FString::Printf(TEXT("CE %s"), *SeqEventName.ToString())
+            );
+            Wired->SetNumberField(TEXT("clonedNodeCount"), 2);
+            Wired->SetNumberField(TEXT("thenLinkCount"), EndpointThen->LinkedTo.Num());
+            WiredEvents.Add(MakeShared<FJsonValueObject>(Wired));
+        }
     }
 
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(LevelBlueprint);
@@ -1624,7 +1745,7 @@ bool ApplyPlaybackControlRewrite(
 
             const TArray<FString> IncomingAfter = CaptureLinkedPinIdentities(SeqControlExec);
             const TArray<FString> OutgoingAfter = CaptureLinkedPinIdentities(SeqControlThen);
-            if (IncomingBefore.Num() != 1 || IncomingBefore != IncomingAfter ||
+            if (IncomingBefore.Num() <= 0 || IncomingBefore != IncomingAfter ||
                 OutgoingBefore != OutgoingAfter)
             {
                 UE_LOG(
@@ -1754,6 +1875,26 @@ bool FunctionCallTargetsObject(UK2Node_CallFunction* CallNode, UObject* Target)
             ? Cast<UK2Node_Literal>(LinkedPin->GetOwningNodeUnchecked())
             : nullptr;
         if (Literal != nullptr && Literal->GetObjectRef() == Target)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsUnresolvedMatineeActorLiteral(UK2Node_Literal* Literal)
+{
+    if (Literal == nullptr || Literal->GetObjectRef() != nullptr)
+    {
+        return false;
+    }
+
+    for (UEdGraphPin* Pin : Literal->Pins)
+    {
+        UClass* LiteralClass = Pin != nullptr
+            ? Cast<UClass>(Pin->PinType.PinSubCategoryObject.Get())
+            : nullptr;
+        if (LiteralClass != nullptr && LiteralClass->IsChildOf(AMatineeActor::StaticClass()))
         {
             return true;
         }
@@ -2180,7 +2321,7 @@ bool CaptureSequencePlaybackControlChains(
             const bool bExecutionChainValid =
                 ControlExec != nullptr &&
                 ControlThen != nullptr &&
-                IncomingExecCount == 1 &&
+                IncomingExecCount >= 1 &&
                 OutgoingExecCount <= 1;
             const FString ControlNameString = ControlName->ToString();
             ++OutControlCallCount;
@@ -2250,7 +2391,7 @@ bool CapturePostRewriteLevelBlueprintAudit(
     UEdGraph* ControllerGraph = nullptr;
     UK2Node_MatineeController* Controller = FindMatineeControllerNode(SourceActor, ControllerGraph);
     const TArray<FSourceEventTrackRecord> SourceTracks = GatherSourceEventTracks(SourceActor);
-    if (Controller == nullptr || ControllerGraph == nullptr || SourceTracks.Num() != 1)
+    if (Controller == nullptr || ControllerGraph == nullptr || SourceTracks.Num() <= 0)
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR post_rewrite_source_event_shape_invalid"));
         return false;
@@ -2294,57 +2435,74 @@ bool CapturePostRewriteLevelBlueprintAudit(
     TSet<FName> ExpectedEventNames;
     TArray<TSharedPtr<FJsonValue>> EventValues;
     bool bAllEventFirstHopsMatch = true;
-    for (const FEventTrackKey& SourceKey : SourceTracks[0].Track->EventTrack)
+    int32 TotalSourceEventKeys = 0;
+    int32 MatchingExpectedZenSeqCustomEvents = 0;
+    for (int32 EventTrackIndex = 0; EventTrackIndex < SourceTracks.Num(); ++EventTrackIndex)
     {
-        const FName ExpectedName(*FString::Printf(TEXT("ZenSeq_%s"), *SourceKey.EventName.ToString()));
-        ExpectedEventNames.Add(ExpectedName);
-
-        TArray<UK2Node_CustomEvent*> Matches;
-        for (UK2Node_CustomEvent* EventNode : ZenSeqEvents)
+        const FSourceEventTrackRecord& SourceTrack = SourceTracks[EventTrackIndex];
+        for (int32 KeyIndex = 0; KeyIndex < SourceTrack.Track->EventTrack.Num(); ++KeyIndex)
         {
-            if (EventNode != nullptr && EventNode->CustomFunctionName == ExpectedName)
+            const FEventTrackKey& SourceKey = SourceTrack.Track->EventTrack[KeyIndex];
+            ++TotalSourceEventKeys;
+            const FName ExpectedName(*FString::Printf(
+                TEXT("ZenSeq_%s"),
+                *SourceKey.EventName.ToString()
+            ));
+            ExpectedEventNames.Add(ExpectedName);
+
+            TArray<UK2Node_CustomEvent*> Matches;
+            for (UK2Node_CustomEvent* EventNode : ZenSeqEvents)
             {
-                Matches.Add(EventNode);
+                if (EventNode != nullptr && EventNode->CustomFunctionName == ExpectedName)
+                {
+                    Matches.Add(EventNode);
+                }
             }
+
+            UEdGraphPin* ControllerPin = Controller->FindPin(SourceKey.EventName);
+            UK2Node_CustomEvent* EventNode = Matches.Num() == 1 ? Matches[0] : nullptr;
+            if (EventNode != nullptr)
+            {
+                ++MatchingExpectedZenSeqCustomEvents;
+            }
+            UEdGraphPin* EventThen = EventNode != nullptr
+                ? FindPinByName(EventNode, UEdGraphSchema_K2::PN_Then, EGPD_Output)
+                : nullptr;
+            const TArray<FString> ControllerFirstHops = CaptureLinkedPinIdentities(ControllerPin);
+            const TArray<FString> EventFirstHops = CaptureLinkedPinIdentities(EventThen);
+            const bool bFirstHopsMatch =
+                EventNode != nullptr &&
+                ControllerPin != nullptr &&
+                ControllerFirstHops.Num() > 0 &&
+                ControllerFirstHops == EventFirstHops;
+            bAllEventFirstHopsMatch = bAllEventFirstHopsMatch && bFirstHopsMatch;
+
+            TSharedPtr<FJsonObject> EventJson = MakeShared<FJsonObject>();
+            EventJson->SetNumberField(TEXT("eventTrackIndex"), EventTrackIndex);
+            EventJson->SetNumberField(TEXT("keyIndex"), KeyIndex);
+            EventJson->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
+            EventJson->SetStringField(TEXT("customEventName"), ExpectedName.ToString());
+            EventJson->SetNumberField(TEXT("matchingCustomEventCount"), Matches.Num());
+            EventJson->SetStringField(
+                TEXT("eventObjectPath"),
+                EventNode != nullptr ? EventNode->GetPathName() : FString()
+            );
+            EventJson->SetStringField(
+                TEXT("graphPath"),
+                EventNode != nullptr && EventNode->GetGraph() != nullptr
+                    ? EventNode->GetGraph()->GetPathName()
+                    : FString()
+            );
+            EventJson->SetNumberField(
+                TEXT("controllerFirstHopCount"),
+                ControllerFirstHops.Num()
+            );
+            EventJson->SetNumberField(TEXT("customEventFirstHopCount"), EventFirstHops.Num());
+            EventJson->SetArrayField(TEXT("controllerFirstHops"), StringsToJson(ControllerFirstHops));
+            EventJson->SetArrayField(TEXT("customEventFirstHops"), StringsToJson(EventFirstHops));
+            EventJson->SetBoolField(TEXT("firstHopsMatch"), bFirstHopsMatch);
+            EventValues.Add(MakeShared<FJsonValueObject>(EventJson));
         }
-
-        UEdGraphPin* ControllerPin = Controller->FindPin(SourceKey.EventName);
-        UK2Node_CustomEvent* EventNode = Matches.Num() == 1 ? Matches[0] : nullptr;
-        UEdGraphPin* EventThen = EventNode != nullptr
-            ? FindPinByName(EventNode, UEdGraphSchema_K2::PN_Then, EGPD_Output)
-            : nullptr;
-        const TArray<FString> ControllerFirstHops = CaptureLinkedPinIdentities(ControllerPin);
-        const TArray<FString> EventFirstHops = CaptureLinkedPinIdentities(EventThen);
-        const bool bFirstHopsMatch =
-            EventNode != nullptr &&
-            ControllerPin != nullptr &&
-            ControllerFirstHops.Num() > 0 &&
-            ControllerFirstHops == EventFirstHops;
-        bAllEventFirstHopsMatch = bAllEventFirstHopsMatch && bFirstHopsMatch;
-
-        TSharedPtr<FJsonObject> EventJson = MakeShared<FJsonObject>();
-        EventJson->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
-        EventJson->SetStringField(TEXT("customEventName"), ExpectedName.ToString());
-        EventJson->SetNumberField(TEXT("matchingCustomEventCount"), Matches.Num());
-        EventJson->SetStringField(
-            TEXT("eventObjectPath"),
-            EventNode != nullptr ? EventNode->GetPathName() : FString()
-        );
-        EventJson->SetStringField(
-            TEXT("graphPath"),
-            EventNode != nullptr && EventNode->GetGraph() != nullptr
-                ? EventNode->GetGraph()->GetPathName()
-                : FString()
-        );
-        EventJson->SetNumberField(
-            TEXT("controllerFirstHopCount"),
-            ControllerFirstHops.Num()
-        );
-        EventJson->SetNumberField(TEXT("customEventFirstHopCount"), EventFirstHops.Num());
-        EventJson->SetArrayField(TEXT("controllerFirstHops"), StringsToJson(ControllerFirstHops));
-        EventJson->SetArrayField(TEXT("customEventFirstHops"), StringsToJson(EventFirstHops));
-        EventJson->SetBoolField(TEXT("firstHopsMatch"), bFirstHopsMatch);
-        EventValues.Add(MakeShared<FJsonValueObject>(EventJson));
     }
 
     UFunction* MatineePlayFunction = AMatineeActor::StaticClass()->FindFunctionByName(
@@ -2401,7 +2559,6 @@ bool CapturePostRewriteLevelBlueprintAudit(
                 continue;
             }
 
-            ++SequencePlayerPlayCallCount;
             UEdGraphPin* PlaySelf = CallNode->FindPin(UEdGraphSchema_K2::PN_Self);
             UEdGraphPin* PlayExec = CallNode->FindPin(UEdGraphSchema_K2::PN_Execute);
             UEdGraphPin* PlayThen = CallNode->FindPin(UEdGraphSchema_K2::PN_Then);
@@ -2444,6 +2601,12 @@ bool CapturePostRewriteLevelBlueprintAudit(
                 }
             }
 
+            if (MatchingSequenceActorLiterals == 0)
+            {
+                continue;
+            }
+            ++SequencePlayerPlayCallCount;
+
             const int32 PlaySelfLinkCount = PlaySelf != nullptr ? PlaySelf->LinkedTo.Num() : 0;
             const int32 IncomingExecCount = PlayExec != nullptr ? PlayExec->LinkedTo.Num() : 0;
             const int32 OutgoingExecCount = PlayThen != nullptr ? PlayThen->LinkedTo.Num() : 0;
@@ -2452,7 +2615,7 @@ bool CapturePostRewriteLevelBlueprintAudit(
                 MatchingGetPlayerLinks == 1 &&
                 GetPlayerSelfLinkCount == 1 &&
                 MatchingSequenceActorLiterals == 1;
-            const bool bExecutionChainValid = IncomingExecCount == 1 && OutgoingExecCount == 1;
+            const bool bExecutionChainValid = IncomingExecCount >= 1 && OutgoingExecCount == 1;
             if (bDataChainValid && bExecutionChainValid)
             {
                 ++ValidSequencePlaybackChainCount;
@@ -2513,8 +2676,8 @@ bool CapturePostRewriteLevelBlueprintAudit(
     const bool bVerified =
         !bLevelBlueprintHasCompileError &&
         !bDirectorBlueprintHasCompileError &&
-        ExpectedEventNames.Num() == SourceTracks[0].Track->EventTrack.Num() &&
-        ZenSeqEvents.Num() == ExpectedEventNames.Num() &&
+        TotalSourceEventKeys == ExpectedEventNames.Num() &&
+        MatchingExpectedZenSeqCustomEvents == ExpectedEventNames.Num() &&
         EventValues.Num() == ExpectedEventNames.Num() &&
         bAllEventFirstHopsMatch &&
         SourceMatineePlayCallCount == 0 &&
@@ -2535,6 +2698,10 @@ bool CapturePostRewriteLevelBlueprintAudit(
     OutAudit->SetArrayField(TEXT("graphs"), GraphValues);
     OutAudit->SetNumberField(TEXT("expectedZenSeqCustomEventCount"), ExpectedEventNames.Num());
     OutAudit->SetNumberField(TEXT("zenSeqCustomEventCount"), ZenSeqEvents.Num());
+    OutAudit->SetNumberField(
+        TEXT("matchingExpectedZenSeqCustomEventCount"),
+        MatchingExpectedZenSeqCustomEvents
+    );
     OutAudit->SetNumberField(TEXT("eventAuditCount"), EventValues.Num());
     OutAudit->SetArrayField(TEXT("events"), EventValues);
     OutAudit->SetBoolField(TEXT("allEventFirstHopsMatch"), bAllEventFirstHopsMatch);
@@ -2656,7 +2823,6 @@ bool CaptureSequencePlaybackChainCounts(
                 continue;
             }
 
-            ++OutSequencePlayerPlayCallCount;
             UEdGraphPin* PlaySelf = CallNode->FindPin(UEdGraphSchema_K2::PN_Self);
             UEdGraphPin* PlayExec = CallNode->FindPin(UEdGraphSchema_K2::PN_Execute);
             UEdGraphPin* PlayThen = CallNode->FindPin(UEdGraphSchema_K2::PN_Then);
@@ -2700,6 +2866,13 @@ bool CaptureSequencePlaybackChainCounts(
                 }
             }
 
+
+            if (MatchingSequenceActorLiterals == 0)
+            {
+                continue;
+            }
+            ++OutSequencePlayerPlayCallCount;
+
             const bool bDataChainValid =
                 PlaySelf != nullptr &&
                 PlaySelf->LinkedTo.Num() == 1 &&
@@ -2709,7 +2882,7 @@ bool CaptureSequencePlaybackChainCounts(
             const bool bExecutionChainValid =
                 PlayExec != nullptr &&
                 PlayThen != nullptr &&
-                PlayExec->LinkedTo.Num() == 1 &&
+                PlayExec->LinkedTo.Num() >= 1 &&
                 PlayThen->LinkedTo.Num() == 1;
             if (bDataChainValid && bExecutionChainValid)
             {
@@ -2748,7 +2921,7 @@ bool ApplySourceMatineeCleanup(
     );
     const TArray<FSourceEventTrackRecord> SourceTracks = GatherSourceEventTracks(SourceActor);
     if (World == nullptr || LevelBlueprint == nullptr || SourceController == nullptr ||
-        ControllerGraph == nullptr || SourceTracks.Num() != 1)
+        ControllerGraph == nullptr || SourceTracks.Num() <= 0)
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR source_cleanup_shape_invalid"));
         return false;
@@ -2757,29 +2930,55 @@ bool ApplySourceMatineeCleanup(
     const FString SourceActorPath = SourceActor->GetPathName();
     const FString SourceActorLabel = SourceActor->GetActorLabel();
     const FString SourceMap = SourceActor->GetLevel()->GetOutermost()->GetName();
+    int32 MapMatineeActorCountBeforeCleanup = 0;
+    for (TActorIterator<AMatineeActor> ActorIt(World); ActorIt; ++ActorIt)
+    {
+        AMatineeActor* Actor = *ActorIt;
+        if (Actor != nullptr && Actor->GetLevel() != nullptr &&
+            Actor->GetLevel()->GetOutermost()->GetName() == SourceMap)
+        {
+            ++MapMatineeActorCountBeforeCleanup;
+        }
+    }
+    const bool bFinalMapMatineeCleanup = MapMatineeActorCountBeforeCleanup == 1;
     TMap<FName, TArray<FString>> ExpectedFirstHops;
     TSet<FName> ExpectedCustomEvents;
-    for (const FEventTrackKey& SourceKey : SourceTracks[0].Track->EventTrack)
+    int32 TotalSourceEventKeys = 0;
+    for (const FSourceEventTrackRecord& SourceTrack : SourceTracks)
     {
-        UEdGraphPin* ControllerPin = SourceController->FindPin(SourceKey.EventName);
-        const TArray<FString> FirstHops = CaptureLinkedPinIdentities(ControllerPin);
-        if (ControllerPin == nullptr || FirstHops.Num() != 1)
+        for (const FEventTrackKey& SourceKey : SourceTrack.Track->EventTrack)
         {
-            UE_LOG(
-                LogZenMatineeBridge,
-                Error,
-                TEXT("ZEN_BRIDGE_ERROR source_cleanup_first_hop_invalid event=%s links=%d"),
-                *SourceKey.EventName.ToString(),
-                FirstHops.Num()
-            );
-            return false;
+            ++TotalSourceEventKeys;
+            UEdGraphPin* ControllerPin = SourceController->FindPin(SourceKey.EventName);
+            const TArray<FString> FirstHops = CaptureLinkedPinIdentities(ControllerPin);
+            if (ControllerPin == nullptr || FirstHops.Num() != 1)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR source_cleanup_first_hop_invalid event=%s links=%d"),
+                    *SourceKey.EventName.ToString(),
+                    FirstHops.Num()
+                );
+                return false;
+            }
+            const FName CustomEventName(*FString::Printf(
+                TEXT("ZenSeq_%s"),
+                *SourceKey.EventName.ToString()
+            ));
+            if (ExpectedCustomEvents.Contains(CustomEventName))
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR source_cleanup_duplicate_event event=%s"),
+                    *SourceKey.EventName.ToString()
+                );
+                return false;
+            }
+            ExpectedCustomEvents.Add(CustomEventName);
+            ExpectedFirstHops.Add(CustomEventName, FirstHops);
         }
-        const FName CustomEventName(*FString::Printf(
-            TEXT("ZenSeq_%s"),
-            *SourceKey.EventName.ToString()
-        ));
-        ExpectedCustomEvents.Add(CustomEventName);
-        ExpectedFirstHops.Add(CustomEventName, FirstHops);
     }
 
     TMap<FString, UEdGraph*> GraphsByPath;
@@ -2800,6 +2999,17 @@ bool ApplySourceMatineeCleanup(
 
     TArray<UK2Node_MatineeController*> ControllersToRemove;
     TArray<UK2Node_Literal*> LiteralsToRemove;
+    TArray<UK2Node_Literal*> UnresolvedMatineeLiteralsToRemove;
+    TArray<UK2Node_CallFunction*> UnresolvedMatineeControlCallsToRemove;
+    TArray<TSharedPtr<FJsonValue>> UnresolvedMatineeControlCallValues;
+    int32 UnresolvedMatineeLiteralLinkCountBeforeRemoval = 0;
+    const TArray<FName> MatineeControlNames = {
+        FName(TEXT("Play")),
+        FName(TEXT("Pause")),
+        FName(TEXT("Stop")),
+        FName(TEXT("SetPosition")),
+        FName(TEXT("Reverse"))
+    };
     for (const TPair<FString, UEdGraph*>& Pair : GraphsByPath)
     {
         UEdGraph* Graph = Pair.Value;
@@ -2817,6 +3027,99 @@ bool ApplySourceMatineeCleanup(
                 if (Literal->GetObjectRef() == SourceActor)
                 {
                     LiteralsToRemove.Add(Literal);
+                }
+                else if (bFinalMapMatineeCleanup && IsUnresolvedMatineeActorLiteral(Literal))
+                {
+                    UnresolvedMatineeLiteralsToRemove.Add(Literal);
+                    int32 LiteralLinkCount = 0;
+                    for (UEdGraphPin* Pin : Literal->Pins)
+                    {
+                        if (Pin == nullptr)
+                        {
+                            continue;
+                        }
+                        for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+                        {
+                            ++LiteralLinkCount;
+                            ++UnresolvedMatineeLiteralLinkCountBeforeRemoval;
+                            UK2Node_CallFunction* CallNode = LinkedPin != nullptr
+                                ? Cast<UK2Node_CallFunction>(LinkedPin->GetOwningNodeUnchecked())
+                                : nullptr;
+                            UFunction* TargetFunction = CallNode != nullptr
+                                ? CallNode->GetTargetFunction()
+                                : nullptr;
+                            UEdGraphPin* SelfPin = CallNode != nullptr
+                                ? CallNode->FindPin(UEdGraphSchema_K2::PN_Self)
+                                : nullptr;
+                            const bool bTargetsLiteral =
+                                SelfPin != nullptr &&
+                                SelfPin->LinkedTo.Contains(Pin);
+                            const bool bKnownMatineeControl =
+                                CallNode != nullptr &&
+                                MatineeControlNames.Contains(CallNode->GetFunctionName()) &&
+                                TargetFunction != nullptr &&
+                                TargetFunction->GetOuterUClass() != nullptr &&
+                                TargetFunction->GetOuterUClass()->GetName() == TEXT("MatineeActor");
+                            if (!bKnownMatineeControl || !bTargetsLiteral ||
+                                HasReachableExecutionEntry(CallNode))
+                            {
+                                UE_LOG(
+                                    LogZenMatineeBridge,
+                                    Error,
+                                    TEXT("ZEN_BRIDGE_ERROR unresolved_matinee_control_not_prunable literal=%s call=%s"),
+                                    *Literal->GetPathName(),
+                                    CallNode != nullptr ? *CallNode->GetPathName() : TEXT("None")
+                                );
+                                return false;
+                            }
+
+                            if (!UnresolvedMatineeControlCallsToRemove.Contains(CallNode))
+                            {
+                                UnresolvedMatineeControlCallsToRemove.Add(CallNode);
+                                TSharedPtr<FJsonObject> CallJson = MakeShared<FJsonObject>();
+                                AddNodeIdentity(CallJson.ToSharedRef(), CallNode);
+                                CallJson->SetStringField(
+                                    TEXT("literalNode"),
+                                    Literal->GetPathName()
+                                );
+                                CallJson->SetStringField(
+                                    TEXT("literalNodeGuid"),
+                                    Literal->NodeGuid.ToString()
+                                );
+                                CallJson->SetBoolField(
+                                    TEXT("executionEntryReachable"),
+                                    false
+                                );
+                                UEdGraphPin* ExecIn = CallNode->FindPin(
+                                    UEdGraphSchema_K2::PN_Execute
+                                );
+                                UEdGraphPin* ExecOut = CallNode->FindPin(
+                                    UEdGraphSchema_K2::PN_Then
+                                );
+                                CallJson->SetNumberField(
+                                    TEXT("incomingExecCount"),
+                                    ExecIn != nullptr ? ExecIn->LinkedTo.Num() : 0
+                                );
+                                CallJson->SetNumberField(
+                                    TEXT("outgoingExecCount"),
+                                    ExecOut != nullptr ? ExecOut->LinkedTo.Num() : 0
+                                );
+                                UnresolvedMatineeControlCallValues.Add(
+                                    MakeShared<FJsonValueObject>(CallJson)
+                                );
+                            }
+                        }
+                    }
+                    if (LiteralLinkCount <= 0)
+                    {
+                        UE_LOG(
+                            LogZenMatineeBridge,
+                            Error,
+                            TEXT("ZEN_BRIDGE_ERROR unresolved_matinee_literal_has_no_controls literal=%s"),
+                            *Literal->GetPathName()
+                        );
+                        return false;
+                    }
                 }
             }
         }
@@ -2877,6 +3180,22 @@ bool ApplySourceMatineeCleanup(
             Literal->DestroyNode();
         }
     }
+    for (UK2Node_CallFunction* CallNode : UnresolvedMatineeControlCallsToRemove)
+    {
+        if (CallNode != nullptr)
+        {
+            CallNode->Modify();
+            CallNode->DestroyNode();
+        }
+    }
+    for (UK2Node_Literal* Literal : UnresolvedMatineeLiteralsToRemove)
+    {
+        if (Literal != nullptr)
+        {
+            Literal->Modify();
+            Literal->DestroyNode();
+        }
+    }
 
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(LevelBlueprint);
     FKismetEditorUtilities::CompileBlueprint(LevelBlueprint);
@@ -2907,6 +3226,10 @@ bool ApplySourceMatineeCleanup(
             RemainingUnresolvedMatineePlayCalls,
             RemainingOtherSelfTargetMatineePlayCalls,
             RemainingOtherSelfTargetMatineeControlCalls
+        );
+    const int32 RemainingUnresolvedMatineeControlCalls =
+        RemainingMatineePlaybackControlAudit->GetIntegerField(
+            TEXT("unresolvedActorLiteralCallCount")
         );
     int32 SequencePlayerPlayCallCount = 0;
     int32 ValidSequencePlaybackChainCount = 0;
@@ -3080,20 +3403,44 @@ bool ApplySourceMatineeCleanup(
         RemainingTargetLiterals == 0 &&
         RemainingSourceMatineePlaybackControlCalls == 0 &&
         RemainingOtherSelfTargetMatineeControlCalls == 0 &&
+        (!bFinalMapMatineeCleanup || RemainingUnresolvedMatineeControlCalls == 0) &&
         SequencePlayerControlCallCount == ExpectedPlaybackControlCount &&
         ValidSequencePlaybackControlChainCount == ExpectedPlaybackControlCount &&
         RemainingWorldActors == 0 &&
+        (!bFinalMapMatineeCleanup || RemainingMapMatineeActors == 0) &&
         SequenceActorCount == 1 &&
+        TotalSourceEventKeys == ExpectedCustomEvents.Num() &&
         VerifiedCustomEvents == ExpectedCustomEvents.Num() &&
         bAllEventFirstHopsPreserved &&
         !bLevelBlueprintHasCompileError;
 
     OutAudit->SetStringField(TEXT("sourceActorPath"), SourceActorPath);
+    OutAudit->SetNumberField(
+        TEXT("mapMatineeActorCountBeforeCleanup"),
+        MapMatineeActorCountBeforeCleanup
+    );
+    OutAudit->SetBoolField(TEXT("finalMapMatineeCleanup"), bFinalMapMatineeCleanup);
     OutAudit->SetNumberField(TEXT("controllersRemoved"), ControllersToRemove.Num());
     OutAudit->SetNumberField(TEXT("sourceActorLiteralsRemoved"), LiteralsToRemove.Num());
     OutAudit->SetNumberField(
         TEXT("sourceActorLiteralLinkCountBeforeRemoval"),
         SourceActorLiteralLinkCountBeforeRemoval
+    );
+    OutAudit->SetNumberField(
+        TEXT("unresolvedMatineeLiteralsRemoved"),
+        UnresolvedMatineeLiteralsToRemove.Num()
+    );
+    OutAudit->SetNumberField(
+        TEXT("unresolvedMatineeControlCallsRemoved"),
+        UnresolvedMatineeControlCallsToRemove.Num()
+    );
+    OutAudit->SetNumberField(
+        TEXT("unresolvedMatineeLiteralLinkCountBeforeRemoval"),
+        UnresolvedMatineeLiteralLinkCountBeforeRemoval
+    );
+    OutAudit->SetArrayField(
+        TEXT("unresolvedMatineeControlCallDetails"),
+        UnresolvedMatineeControlCallValues
     );
     OutAudit->SetNumberField(TEXT("remainingTargetControllerCount"), RemainingTargetControllers);
     OutAudit->SetNumberField(TEXT("remainingTargetLiteralCount"), RemainingTargetLiterals);
@@ -3586,6 +3933,7 @@ bool CaptureGeneratedSequenceAudit(
     for (const TSharedPtr<FJsonValue>& TrackValue : EventTrackValues)
     {
         const TSharedPtr<FJsonObject> TrackJson = TrackValue->AsObject();
+        const double EventTrackIndex = TrackJson->GetNumberField(TEXT("eventTrackIndex"));
         const TArray<TSharedPtr<FJsonValue>>* KeyValues = nullptr;
         if (!TrackJson->TryGetArrayField(TEXT("keys"), KeyValues) || KeyValues == nullptr)
         {
@@ -3609,6 +3957,7 @@ bool CaptureGeneratedSequenceAudit(
             }
 
             TSharedPtr<FJsonObject> PlanJson = MakeShared<FJsonObject>();
+            PlanJson->SetNumberField(TEXT("eventTrackIndex"), EventTrackIndex);
             PlanJson->SetNumberField(TEXT("keyIndex"), KeyJson->GetNumberField(TEXT("keyIndex")));
             PlanJson->SetStringField(TEXT("sourceEventName"), SourceEventName);
             PlanJson->SetStringField(

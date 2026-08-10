@@ -39,8 +39,9 @@ Source Matinee Event Track keys are recorded with their names, times, and
 forward/backward/jump flags. After conversion, every generated Sequencer event
 key is matched back to the source key by track order and exact frame conversion,
 and its serialized Director Blueprint endpoint is captured along with the full
-Director graph. The audit also proves that repeated source names reuse one
-endpoint and distinct source names never share an endpoint. This is necessary
+Director graph. The audit proves that distinct source names never share an
+endpoint, and the graph rewrite additionally requires every selected source
+event name to be unique across that target's Event Tracks. This is necessary
 because Epic's 4.27 converter creates generic `MatineeEvent` endpoint names;
 the original Matinee event name is otherwise only present in a temporary map
 during conversion.
@@ -102,30 +103,32 @@ execution chain, inventories the remaining Matinee actors in that map, and
 captures the resulting graph.
 
 The workflow invokes the commandlet serially for
-`/Game/Maps/Zen_Movie:MatineeActor_Movie` and
-`/Game/Maps/Zen_P:MatineeActor` in its writable UE 4.27 copy. The clean expanded
-UE 4.23 input is never overwritten, and `Zen_P:MatineeActor3` remains untouched.
-When the cleaned output is opened by the selected UE 5 probe, only the exact
-three known transitional warnings for that deferred actor are accepted;
-retained-source mode requires the exact nine-warning set for all three legacy
-actors. The workflow currently allows exact `5.4.4` and `5.5.4` runtime checks,
-with `5.4.4` as the default.
-
-Conversion is deliberately scoped to the two targets above. The additional
-`Zen_P:MatineeActor3` is inventoried and asserted to remain after the second
-target cleanup, but is not converted in this stage.
+`/Game/Maps/Zen_Movie:MatineeActor_Movie`,
+`/Game/Maps/Zen_P:MatineeActor`, and
+`/Game/Maps/Zen_P:MatineeActor3` in its writable UE 4.27 copy. The clean
+expanded UE 4.23 input is never overwritten. The third target exercises two
+separate Event Tracks, Sound output, and keyed Toggle-to-Particle conversion;
+it produces `/Game/Maps/MatineeActor3LevelSequence`. When source cleanup is
+enabled, the selected UE 5 probe accepts no Blueprint compiler warning and no
+Matinee `CreateExport` warning. Retained-source mode remains useful for the
+UE 4.27 bridge audit but is not considered a clean UE 5 runtime result. The
+workflow currently allows exact `5.4.4` and `5.5.4` runtime checks, with
+`5.4.4` as the default.
 
 `Zen_P` also contains one source-authored `Unknown` Matinee actor literal. Its
 four linked `Play`, `Pause`, and `SetPosition` calls predate the bridge and are
-not references to either migration target. The bridge preserves this historical
-graph content, but classifies every remaining Matinee control by its self target
-and audits whether its execution chain reaches an event/controller entry. The
-target gate accepts only the exact known node and literal GUIDs: all four
-unresolved calls must remain disconnected from an execution entry, while the
-three resolved calls must still target the deliberately deferred
-`MatineeActor3`. Any additional or differently wired Matinee control fails the
-gate. Source playback-control identities are captured before their nodes are
-rewritten, so the recorded plan and the final rewrite count must also agree.
+not references to a live migration target. The second-stage gate preserves and
+classifies this historical graph content while `MatineeActor3` still exists:
+all four unresolved calls must have the exact known node and literal GUIDs and
+must remain disconnected from every execution entry. During cleanup of the
+map's final Matinee, the bridge revalidates every literal link, function owner,
+control name, self connection, GUID, execution-pin count, and execution
+unreachability before deleting the four calls and their `Unknown` literal. It
+then recompiles and proves that no Matinee control, controller, actor literal,
+or actor remains. Any additional or differently wired content fails instead of
+being pruned. Source playback-control identities are captured before their
+nodes are rewritten, so the recorded plan and the final rewrite count must
+also agree.
 
 Each invocation receives an explicit target-specific source and Sequencer track
 contract. The Movie target requires Director, Fade, Sound, Event, Toggle,
@@ -134,7 +137,9 @@ target has no Sound track, so it instead requires Director, Fade, Event,
 Toggle, Movement, and Float tracks and the matching non-audio outputs. The
 bridge separately audits Toggle key counts: a keyed source Toggle requires a
 generated Particle track, while an empty source Toggle does not require an
-empty Sequencer track.
+empty Sequencer track. `MatineeActor3` adds the target-specific Director,
+Event, Float, Movement, Sound, and Toggle contract and requires Camera Cut,
+Event, Float, Transform, Audio, and Particle outputs.
 
 Epic's 4.27 converter emits one false-positive `Unsupported track 'Fade'.`
 warning from its generic group pass, then converts that Fade track in its
@@ -163,6 +168,7 @@ The successful serial conversion writes:
 ```text
 Saved/ZenMigration/ue427-bridge-report-zen-movie.json
 Saved/ZenMigration/ue427-bridge-report-zen-p-matineeactor.json
+Saved/ZenMigration/ue427-bridge-report-zen-p-matineeactor3.json
 ```
 
 The adapter deliberately targets UE 4.27.2. The workflow pulls Epic's documented

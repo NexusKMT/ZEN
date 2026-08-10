@@ -31,16 +31,18 @@ this public repository. It:
 6. optionally creates a writable project copy without the stale UE 4.23 DDC,
    builds the repository's bridge commandlet with Epic's documented
    `ghcr.io/epicgames/unreal-engine:dev-4.27` image, verifies that the image
-   contains UE 4.27.2, inventories all Matinee actors, converts
-   `/Game/Maps/Zen_Movie:MatineeActor_Movie` and then
-   `/Game/Maps/Zen_P:MatineeActor`, retains those two legacy actors by default
-   or removes them through an explicit audited input, leaves
-   `/Game/Maps/Zen_P:MatineeActor3` untouched for the next stage, and resaves
-   the runner-local project copy with UE 4.27.2;
+   contains UE 4.27.2, inventories all Matinee actors, and serially converts
+   `/Game/Maps/Zen_Movie:MatineeActor_Movie`,
+   `/Game/Maps/Zen_P:MatineeActor`, and
+   `/Game/Maps/Zen_P:MatineeActor3`. It retains those legacy actors by default
+   or removes each one through an explicit audited input; the final `Zen_P`
+   cleanup also validates and removes the exact unreachable historical
+   `Unknown` Matinee-control cluster. It then resaves the runner-local project
+   copy with UE 4.27.2;
 7. optionally pulls the exact selected Epic UE 5 development image, verifies
    its `Build.version`, starts a Python commandlet against the completed UE 4.27
    output, and loads both `/Game/Maps/Zen_Movie` and `/Game/Maps/Zen_P` plus
-   their two generated Level Sequences while Content remains mounted
+   all three generated Level Sequences while Content remains mounted
    read-only.
 
 The original expanded UE 4.23 project is always retained unchanged. The bridge
@@ -48,16 +50,21 @@ commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
 tracks before conversion and the resulting Camera Cut, Fade, Audio, Event, and
 keyed Toggle outputs before it saves anything. Converter warnings are fatal except
 for UE 4.27's exact, captured Fade false positive when the generated Fade track
-is independently verified. Its post-rewrite audit also requires all seven
-Level Blueprint event entries to retain their original first-hop behavior,
-requires every rewritten `Play` or `Stop` call to preserve its incoming and
+is independently verified. Its post-rewrite audits require all twelve target
+Level Blueprint event entries, including the two separate Event Tracks on
+`MatineeActor3`, to retain their original first-hop behavior. They require
+every rewritten `Play`, `Pause`, or `Stop` call to preserve its complete set of incoming and
 outgoing execution links and its complete LevelSequenceActor player data
 chain, and requires zero source-targeted Blueprint Matinee controls or compile
 errors. With `remove_source_matinee=true`, each commandlet invocation requires
 exactly one target Controller and all target Actor literals to be disconnected
 by the verified rewrite, removes those nodes and the target source Actor,
 recompiles, and proves the event first-hop paths and all Level Sequence control
-chains still match. See
+chains still match. When the target is the final Matinee in a map, cleanup
+additionally requires every unresolved Matinee literal link to be a known,
+execution-unreachable Matinee control before removing that historical cluster,
+then proves the map and Level Blueprint contain no Matinee actors or controls.
+See
 [`automation/ue427/README.md`](automation/ue427/README.md) for its boundary and
 implementation rationale.
 
@@ -128,10 +135,13 @@ gh workflow run ue55-asset-probe.yml \
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
-In retained-source mode, the selected UE 5 probe requires the exact nine known
-orphan-export warnings for all three legacy actors. In cleanup mode it requires
-only the exact three warnings for the deliberately deferred `MatineeActor3`.
-A missing, changed, or additional expected warning fails either mode.
+Retained-source mode remains available for UE 4.27 bridge comparison, but the
+strict UE 5 runtime probe rejects its serialized Matinee Blueprint residue.
+With `remove_source_matinee=true`, the selected UE 5 probe requires zero
+Blueprint compiler errors, zero Blueprint compiler warnings, zero Matinee
+`CreateExport` warnings, two clean MapCheck results, and successful loading of
+all three generated Level Sequences. Any warning or missing success marker
+fails the run.
 
 Epic's public container documentation does not enumerate private patch tags.
 The workflow therefore treats both `dev-5.4.4` and `dev-5.5.4` as runtime

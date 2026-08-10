@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_ue427_bridge:
-        description: Convert the Zen_Movie Matinee with the licensed Epic UE 4.27.2 image
+        description: Serially convert all three target Matinees with the licensed Epic UE 4.27.2 image
         required: true
         type: boolean
         default: false
@@ -14,7 +14,7 @@ on:
         type: boolean
         default: false
       run_ue_container:
-        description: Load /Game/Maps/Zen_Movie in the selected UE 5 version against the completed UE 4.27 bridge output
+        description: Load both maps and all three generated sequences in the selected UE 5 version
         required: true
         type: boolean
         default: false
@@ -430,8 +430,10 @@ jobs:
               editor=/home/ue4/UnrealEngine/Engine/Binaries/Linux/UE4Editor-Cmd
               project=/workspace/EpicZenGarden/EpicZenGarden.uproject
               cleanup_args=()
+              actor3_expected_matinees=2
               if [[ "$SOURCE_CLEANUP_REQUESTED" == "true" ]]; then
                 cleanup_args+=(-RemoveSourceMatinee)
+                actor3_expected_matinees=1
               fi
 
               "$editor" "$project" \
@@ -460,6 +462,19 @@ jobs:
                 -stdout -FullStdOutLogOutput -UTF8Output |
                 tee /workspace/logs/zen-p-matineeactor-conversion.log
 
+              "$editor" "$project" \
+                -run=ZenMatineeBridge \
+                -TargetMap=/Game/Maps/Zen_P \
+                -ExpectedActor=MatineeActor3 \
+                -ExpectedMatinees="$actor3_expected_matinees" \
+                -RequiredSourceTracks=InterpTrackDirector,InterpTrackEvent,InterpTrackFloatProp,InterpTrackMove,InterpTrackSound,InterpTrackToggle \
+                -RequiredSequenceTracks=MovieScene3DTransformTrack,MovieSceneAudioTrack,MovieSceneCameraCutTrack,MovieSceneEventTrack,MovieSceneFloatTrack,MovieSceneParticleTrack \
+                -ReportName=ue427-bridge-report-zen-p-matineeactor3.json \
+                "${cleanup_args[@]}" \
+                -unattended -nop4 -nosplash -NullRHI -NoSound \
+                -stdout -FullStdOutLogOutput -UTF8Output |
+                tee /workspace/logs/zen-p-matineeactor3-conversion.log
+
               set +e
               "$editor" "$project" \
                 -run=ResavePackages \
@@ -483,8 +498,8 @@ jobs:
               fi
 
               required_resave_lines=(
-                "[REPORT] 920/920 packages were considered for resaving"
-                "[REPORT] 920/920 packages were resaved"
+                "[REPORT] 921/921 packages were considered for resaving"
+                "[REPORT] 921/921 packages were resaved"
                 "Commandlet ResavePackagesCommandlet_0 finished execution (result 0)"
                 "Success - 0 error(s), 0 warning(s)"
                 "LogExit: Exiting."
@@ -506,6 +521,7 @@ jobs:
           sequence_assets=(
             "$UE427_PROJECT_DIR/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
             "$UE427_PROJECT_DIR/Content/Maps/MatineeActorLevelSequence.uasset"
+            "$UE427_PROJECT_DIR/Content/Maps/MatineeActor3LevelSequence.uasset"
           )
           for sequence_asset in "${sequence_assets[@]}"; do
             if [[ ! -s "$sequence_asset" ]]; then
@@ -513,7 +529,7 @@ jobs:
               exit 23
             fi
           done
-          echo 'Verified that both generated Level Sequence packages exist on disk.'
+          echo 'Verified that all three generated Level Sequence packages exist on disk.'
 
           report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report-zen-movie.json"
           test -f "$report"
@@ -1153,6 +1169,14 @@ jobs:
             -f "$GITHUB_WORKSPACE/.github/scripts/ue427-zen-p-matineeactor-gate.jq" \
             "$zen_p_report" >/dev/null
 
+          zen_p_actor3_report="$UE427_PROJECT_DIR/Saved/ZenMigration/ue427-bridge-report-zen-p-matineeactor3.json"
+          test -f "$zen_p_actor3_report"
+          jq empty "$zen_p_actor3_report"
+          jq --exit-status \
+            --argjson source_cleanup_requested "$SOURCE_CLEANUP_REQUESTED" \
+            -f "$GITHUB_WORKSPACE/.github/scripts/ue427-zen-p-matineeactor3-gate.jq" \
+            "$zen_p_actor3_report" >/dev/null
+
           # The adapter is only valid in UE 4.27 and must not follow the
           # converted project into the selected UE 5 runtime.
           used_plugin="$RUNNER_TEMP/ZenMatineeBridge-used"
@@ -1249,7 +1273,32 @@ jobs:
               "$zen_p_literals" "$zen_p_remaining"
             printf '| Resolved deferred / unresolved historical / reachable unresolved controls | `%s` / `%s` / `%s` |\n' \
               "$zen_p_resolved_matinee_controls" "$zen_p_unresolved_matinee_controls" "$zen_p_reachable_unresolved_controls"
-            echo '| Deferred actor | `/Game/Maps/Zen_P:MatineeActor3` |'
+            echo '| Next serialized stage | `/Game/Maps/Zen_P:MatineeActor3` |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          actor3_events="$(jq '.generatedSequenceAudits[0].eventKeyCount' "$zen_p_actor3_report")"
+          actor3_event_tracks="$(jq '.generatedSequenceAudits[0].sourceEventTrackCount' "$zen_p_actor3_report")"
+          actor3_controls="$(jq '.generatedSequenceAudits[0].playbackRewriteResult.retargetedControlCount' "$zen_p_actor3_report")"
+          actor3_chains="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.validSequencePlaybackControlChainCount' "$zen_p_actor3_report")"
+          actor3_unknown_literals="$(jq '.generatedSequenceAudits[0].sourceCleanup.unresolvedMatineeLiteralsRemoved // 0' "$zen_p_actor3_report")"
+          actor3_unknown_controls="$(jq '.generatedSequenceAudits[0].sourceCleanup.unresolvedMatineeControlCallsRemoved // 0' "$zen_p_actor3_report")"
+          actor3_remaining="$(jq '.generatedSequenceAudits[0].sourceCleanup.remainingMapMatineeActorCount // 1' "$zen_p_actor3_report")"
+          {
+            echo
+            echo '## UE 4.27.2 Zen_P final Matinee bridge'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            echo '| Converted target | `/Game/Maps/Zen_P:MatineeActor3` |'
+            echo '| Generated sequence | `/Game/Maps/MatineeActor3LevelSequence` |'
+            printf '| Verified Event tracks / keys | `%s` / `%s` |\n' \
+              "$actor3_event_tracks" "$actor3_events"
+            printf '| Rewritten controls / valid control chains | `%s` / `%s` |\n' \
+              "$actor3_controls" "$actor3_chains"
+            printf '| Removed unreachable historical literals / controls | `%s` / `%s` |\n' \
+              "$actor3_unknown_literals" "$actor3_unknown_controls"
+            printf '| Remaining Zen_P Matinee actors | `%s` |\n' "$actor3_remaining"
+            echo '| Final Matinee-free Level Blueprint audit | `strictly verified when cleanup is enabled` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the UE 4.27 migration audit
@@ -1340,7 +1389,8 @@ jobs:
               echo "Verified that Content/Maps/Zen_P.umap exists on the bridge output."
               test -f "$ro_root/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
               test -f "$ro_root/Content/Maps/MatineeActorLevelSequence.uasset"
-              echo "Verified that both generated Level Sequence packages exist on the bridge output."
+              test -f "$ro_root/Content/Maps/MatineeActor3LevelSequence.uasset"
+              echo "Verified that all three generated Level Sequence packages exist on the bridge output."
               if touch "$ro_root/.write-probe" 2>/dev/null; then
                 echo "Project mount unexpectedly accepted a write." >&2
                 exit 1
@@ -1386,12 +1436,18 @@ jobs:
           echo "UE ${UE5_VERSION} probe process status: $probe_status"
 
           if [[ "$probe_status" = 124 ]]; then
-            echo "::error::The UE ${UE5_VERSION} two-map probe timed out."
+            echo "::error::The UE ${UE5_VERSION} three-sequence probe timed out."
             exit 1
           fi
           if [[ "$probe_status" != 0 ]]; then
-            echo "::error::The UE ${UE5_VERSION} two-map probe failed."
+            echo "::error::The UE ${UE5_VERSION} three-sequence probe failed."
             exit "$probe_status"
+          fi
+
+          if grep -Eq 'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):' "$probe_log"; then
+            echo "::error::The UE ${UE5_VERSION} probe emitted a Blueprint compiler error or warning."
+            grep -E 'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):' "$probe_log" || true
+            exit 1
           fi
 
           required_probe_lines=(
@@ -1399,7 +1455,7 @@ jobs:
             'Verified that the project Content directory exists.'
             'Verified that Content/Maps/Zen_Movie.umap exists on the bridge output.'
             'Verified that Content/Maps/Zen_P.umap exists on the bridge output.'
-            'Verified that both generated Level Sequence packages exist on the bridge output.'
+            'Verified that all three generated Level Sequence packages exist on the bridge output.'
             'Verified that the read-only project mount rejected a write.'
             "Prepared writable UE ${UE5_VERSION} probe root with read-only Content symlink."
             "LogInit:  - we're running without rendering"
@@ -1407,6 +1463,7 @@ jobs:
             'ZEN_UE5_PROBE_SEQUENCE_LOADED asset=/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence class=LevelSequence'
             'ZEN_UE5_PROBE_MAP_LOADED world=/Game/Maps/Zen_P.Zen_P'
             'ZEN_UE5_PROBE_SEQUENCE_LOADED asset=/Game/Maps/MatineeActorLevelSequence.MatineeActorLevelSequence class=LevelSequence'
+            'ZEN_UE5_PROBE_SEQUENCE_LOADED asset=/Game/Maps/MatineeActor3LevelSequence.MatineeActor3LevelSequence class=LevelSequence'
             'ZEN_UE5_PROBE_SUCCESS'
             'MapCheck: Map check complete: 0 Error(s), 0 Warning(s)'
             'Commandlet PythonScriptCommandlet_0 finished execution (result 0)'
@@ -1430,6 +1487,7 @@ jobs:
             'Zen_Movie'
             '/Game/Maps/Zen_P'
             'MatineeActorLevelSequence'
+            'MatineeActor3LevelSequence'
           )
           for required_regex in "${required_probe_regexes[@]}"; do
             if ! grep -Eq -- "$required_regex" "$probe_log"; then
@@ -1454,16 +1512,15 @@ jobs:
             exit 1
           fi
 
-          # MatineeActor3 remains deliberately deferred in this stage, so both
-          # modes require its exact transitional set. Retained-source mode also
-          # requires the exact sets for the two converted-but-retained actors.
-          expected_create_export_warnings=(
-            "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3"
-            "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3.InterpData_0"
-            "CreateExport: Failed to load Outer for resource 'SceneComp': MatineeActor /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3"
-          )
+          # Once all three source Matinees are removed, UE5 must emit no
+          # transitional CreateExport warnings. Retained-source mode remains
+          # diagnostic and requires its exact transitional warning set.
+          expected_create_export_warnings=()
           if [[ "$SOURCE_CLEANUP_REQUESTED" != "true" ]]; then
             expected_create_export_warnings+=(
+              "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3"
+              "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3.InterpData_0"
+              "CreateExport: Failed to load Outer for resource 'SceneComp': MatineeActor /Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3"
               "CreateExport: Failed to load Outer for resource 'Sprite': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
               "CreateExport: Failed to load Outer for resource 'InterpCurveEdSetup_0': InterpData /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie.InterpData_0"
               "CreateExport: Failed to load Outer for resource 'SceneComp': MatineeActor /Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie"
@@ -1534,25 +1591,25 @@ jobs:
           done
 
           if grep -Eiq \
-            'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault|LoadErrors: Error:|LoadPackage: SkipPackage: /Game/Maps/MatineeActor(_Movie)?LevelSequence' \
+            'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault|LoadErrors: Error:|LoadPackage: SkipPackage: /Game/Maps/MatineeActor(3|_Movie)?LevelSequence' \
             "$probe_log"
           then
             echo "::error::The UE ${UE5_VERSION} probe log contains a missing sequence, environment, abnormal-exit, or fatal marker."
             exit 1
           fi
 
-          echo "UE ${UE5_VERSION} loaded Zen_Movie and Zen_P from the bridge output with project Content remaining read-only."
+          echo "UE ${UE5_VERSION} loaded Zen_Movie and Zen_P plus all three generated Level Sequences from the bridge output with project Content remaining read-only."
 
           {
             echo
             echo '## UE container probe'
             echo
-            printf 'Validated `%s` by loading `Zen_Movie` and `Zen_P` from the UE 4.27 bridge output.\n' "$UE5_IMAGE"
+            printf 'Validated `%s` by loading `Zen_Movie`, `Zen_P`, and three generated Level Sequences from the UE 4.27 bridge output.\n' "$UE5_IMAGE"
             echo
             echo '- Bridge project mount: read-only'
             echo '- Probe project root: writable shell with Content symlink'
             echo '- Maps: `/Game/Maps/Zen_Movie`, `/Game/Maps/Zen_P`'
-            echo '- Generated sequences loaded: `2`'
+            echo '- Generated sequences loaded: `3`'
             printf '%s\n' \
               "- Transitional source Matinee export warnings: \`${#observed_create_export_warnings[@]}\` (exact set verified)"
           } >> "$GITHUB_STEP_SUMMARY"
