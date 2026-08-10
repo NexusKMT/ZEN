@@ -1232,6 +1232,9 @@ jobs:
           zen_p_chains="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.validSequencePlaybackControlChainCount' "$zen_p_report")"
           zen_p_literals="$(jq '.generatedSequenceAudits[0].sourceCleanup.sourceActorLiteralsRemoved // 0' "$zen_p_report")"
           zen_p_remaining="$(jq '.generatedSequenceAudits[0].sourceCleanup.remainingMapMatineeActorCount // 2' "$zen_p_report")"
+          zen_p_resolved_matinee_controls="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.matineePlaybackControlAudit.resolvedActorLiteralCallCount' "$zen_p_report")"
+          zen_p_unresolved_matinee_controls="$(jq '.generatedSequenceAudits[0].postRewriteLevelBlueprint.matineePlaybackControlAudit.unresolvedActorLiteralCallCount' "$zen_p_report")"
+          zen_p_reachable_unresolved_controls="$(jq '[.generatedSequenceAudits[0].postRewriteLevelBlueprint.matineePlaybackControlAudit.unresolvedActorLiteralCalls[] | select(.executionEntryReachable)] | length' "$zen_p_report")"
           {
             echo
             echo '## UE 4.27.2 Zen_P bridge'
@@ -1244,6 +1247,8 @@ jobs:
               "$zen_p_events" "$zen_p_controls" "$zen_p_chains"
             printf '| Removed target literals / remaining Zen_P Matinee actors | `%s` / `%s` |\n' \
               "$zen_p_literals" "$zen_p_remaining"
+            printf '| Resolved deferred / unresolved historical / reachable unresolved controls | `%s` / `%s` / `%s` |\n' \
+              "$zen_p_resolved_matinee_controls" "$zen_p_unresolved_matinee_controls" "$zen_p_reachable_unresolved_controls"
             echo '| Deferred actor | `/Game/Maps/Zen_P:MatineeActor3` |'
           } >> "$GITHUB_STEP_SUMMARY"
 

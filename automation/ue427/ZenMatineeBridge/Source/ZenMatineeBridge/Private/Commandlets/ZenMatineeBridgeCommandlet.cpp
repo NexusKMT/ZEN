@@ -1761,6 +1761,289 @@ bool FunctionCallTargetsObject(UK2Node_CallFunction* CallNode, UObject* Target)
     return false;
 }
 
+bool HasReachableExecutionEntry(UEdGraphNode* StartNode)
+{
+    if (StartNode == nullptr)
+    {
+        return false;
+    }
+
+    TSet<UEdGraphNode*> Visited;
+    TArray<UEdGraphNode*> Queue;
+    Queue.Add(StartNode);
+    int32 QueueIndex = 0;
+    while (QueueIndex < Queue.Num())
+    {
+        UEdGraphNode* Node = Queue[QueueIndex++];
+        if (Node == nullptr || Visited.Contains(Node))
+        {
+            continue;
+        }
+        Visited.Add(Node);
+
+        bool bHasExecInput = false;
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (Pin == nullptr || Pin->Direction != EGPD_Input ||
+                Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+            {
+                continue;
+            }
+
+            bHasExecInput = true;
+            for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+            {
+                if (LinkedPin == nullptr || LinkedPin->Direction != EGPD_Output ||
+                    LinkedPin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+                {
+                    continue;
+                }
+                if (UEdGraphNode* UpstreamNode = LinkedPin->GetOwningNodeUnchecked())
+                {
+                    Queue.Add(UpstreamNode);
+                }
+            }
+        }
+
+        // Blueprint event/controller nodes originate execution and have no
+        // execution input pins. An impure node with an unlinked input does not.
+        if (!bHasExecInput)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+TSharedRef<FJsonObject> CaptureMatineePlaybackControlAudit(
+    const TMap<FString, UEdGraph*>& GraphsByPath,
+    int32& OutPlayCallCount,
+    int32& OutResolvedPlayCallCount,
+    int32& OutUnresolvedPlayCallCount,
+    int32& OutOtherSelfTargetPlayCallCount,
+    int32& OutOtherSelfTargetCallCount
+)
+{
+    OutPlayCallCount = 0;
+    OutResolvedPlayCallCount = 0;
+    OutUnresolvedPlayCallCount = 0;
+    OutOtherSelfTargetPlayCallCount = 0;
+    OutOtherSelfTargetCallCount = 0;
+
+    const TArray<FName> ControlNames = {
+        FName(TEXT("Play")),
+        FName(TEXT("Pause")),
+        FName(TEXT("Stop")),
+        FName(TEXT("SetPosition")),
+        FName(TEXT("Reverse"))
+    };
+    TMap<FString, int32> ResolvedControlCounts;
+    TMap<FString, int32> UnresolvedControlCounts;
+    TMap<FString, int32> OtherSelfTargetControlCounts;
+
+    struct FCallRecord
+    {
+        FString ObjectPath;
+        TSharedPtr<FJsonObject> Json;
+    };
+    TArray<FCallRecord> ResolvedCalls;
+    TArray<FCallRecord> UnresolvedCalls;
+    TArray<FCallRecord> OtherSelfTargetCalls;
+
+    TArray<FString> GraphPaths;
+    GraphsByPath.GetKeys(GraphPaths);
+    GraphPaths.Sort();
+    for (const FString& GraphPath : GraphPaths)
+    {
+        UEdGraph* Graph = GraphsByPath.FindChecked(GraphPath);
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+            if (CallNode == nullptr || !ControlNames.Contains(CallNode->GetFunctionName()))
+            {
+                continue;
+            }
+
+            UFunction* TargetFunction = CallNode->GetTargetFunction();
+            if (TargetFunction == nullptr || TargetFunction->GetOuterUClass() == nullptr ||
+                TargetFunction->GetOuterUClass()->GetName() != TEXT("MatineeActor"))
+            {
+                continue;
+            }
+
+            const FString FunctionName = CallNode->GetFunctionName().ToString();
+            const bool bIsPlay = CallNode->GetFunctionName() == FName(TEXT("Play"));
+            if (bIsPlay)
+            {
+                ++OutPlayCallCount;
+            }
+
+            UEdGraphPin* SelfPin = CallNode->FindPin(UEdGraphSchema_K2::PN_Self);
+            int32 SelfLiteralLinkCount = 0;
+            int32 ResolvedLiteralLinkCount = 0;
+            int32 UnresolvedLiteralLinkCount = 0;
+            UK2Node_Literal* SelfLiteral = nullptr;
+            if (SelfPin != nullptr)
+            {
+                for (UEdGraphPin* LinkedPin : SelfPin->LinkedTo)
+                {
+                    UK2Node_Literal* Literal = LinkedPin != nullptr
+                        ? Cast<UK2Node_Literal>(LinkedPin->GetOwningNodeUnchecked())
+                        : nullptr;
+                    if (Literal == nullptr)
+                    {
+                        continue;
+                    }
+                    ++SelfLiteralLinkCount;
+                    SelfLiteral = Literal;
+                    if (Literal->GetObjectRef() != nullptr)
+                    {
+                        ++ResolvedLiteralLinkCount;
+                    }
+                    else
+                    {
+                        ++UnresolvedLiteralLinkCount;
+                    }
+                }
+            }
+
+            const int32 SelfLinkCount = SelfPin != nullptr ? SelfPin->LinkedTo.Num() : 0;
+            const bool bResolvedActorLiteral =
+                SelfLinkCount == 1 && SelfLiteralLinkCount == 1 &&
+                ResolvedLiteralLinkCount == 1;
+            const bool bUnresolvedActorLiteral =
+                SelfLinkCount == 1 && SelfLiteralLinkCount == 1 &&
+                UnresolvedLiteralLinkCount == 1;
+
+            UEdGraphPin* ExecIn = CallNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+            UEdGraphPin* ExecOut = CallNode->FindPin(UEdGraphSchema_K2::PN_Then);
+            TSharedPtr<FJsonObject> CallJson = MakeShared<FJsonObject>();
+            AddNodeIdentity(CallJson.ToSharedRef(), CallNode);
+            CallJson->SetNumberField(TEXT("selfLinkCount"), SelfLinkCount);
+            CallJson->SetNumberField(TEXT("selfLiteralLinkCount"), SelfLiteralLinkCount);
+            CallJson->SetStringField(
+                TEXT("selfLiteralNode"),
+                SelfLiteral != nullptr ? SelfLiteral->GetPathName() : FString()
+            );
+            CallJson->SetStringField(
+                TEXT("selfLiteralNodeGuid"),
+                SelfLiteral != nullptr ? SelfLiteral->NodeGuid.ToString() : FString()
+            );
+            CallJson->SetStringField(
+                TEXT("selfLiteralReferencedObject"),
+                SelfLiteral != nullptr && SelfLiteral->GetObjectRef() != nullptr
+                    ? SelfLiteral->GetObjectRef()->GetPathName()
+                    : FString()
+            );
+            CallJson->SetNumberField(
+                TEXT("incomingExecCount"),
+                ExecIn != nullptr ? ExecIn->LinkedTo.Num() : 0
+            );
+            CallJson->SetNumberField(
+                TEXT("outgoingExecCount"),
+                ExecOut != nullptr ? ExecOut->LinkedTo.Num() : 0
+            );
+            CallJson->SetArrayField(
+                TEXT("incomingExec"),
+                StringsToJson(CaptureLinkedPinIdentities(ExecIn))
+            );
+            CallJson->SetArrayField(
+                TEXT("outgoingExec"),
+                StringsToJson(CaptureLinkedPinIdentities(ExecOut))
+            );
+            CallJson->SetBoolField(
+                TEXT("executionEntryReachable"),
+                HasReachableExecutionEntry(CallNode)
+            );
+
+            FCallRecord Record;
+            Record.ObjectPath = CallNode->GetPathName();
+            Record.Json = CallJson;
+            if (bResolvedActorLiteral)
+            {
+                ResolvedControlCounts.FindOrAdd(FunctionName) += 1;
+                ResolvedCalls.Add(Record);
+                if (bIsPlay)
+                {
+                    ++OutResolvedPlayCallCount;
+                }
+            }
+            else if (bUnresolvedActorLiteral)
+            {
+                UnresolvedControlCounts.FindOrAdd(FunctionName) += 1;
+                UnresolvedCalls.Add(Record);
+                if (bIsPlay)
+                {
+                    ++OutUnresolvedPlayCallCount;
+                }
+            }
+            else
+            {
+                OtherSelfTargetControlCounts.FindOrAdd(FunctionName) += 1;
+                OtherSelfTargetCalls.Add(Record);
+                ++OutOtherSelfTargetCallCount;
+                if (bIsPlay)
+                {
+                    ++OutOtherSelfTargetPlayCallCount;
+                }
+            }
+        }
+    }
+
+    const auto SortRecords = [](TArray<FCallRecord>& Records)
+    {
+        Records.Sort([](const FCallRecord& Left, const FCallRecord& Right)
+        {
+            return Left.ObjectPath < Right.ObjectPath;
+        });
+    };
+    SortRecords(ResolvedCalls);
+    SortRecords(UnresolvedCalls);
+    SortRecords(OtherSelfTargetCalls);
+
+    const auto RecordsToJson = [](const TArray<FCallRecord>& Records)
+    {
+        TArray<TSharedPtr<FJsonValue>> Values;
+        for (const FCallRecord& Record : Records)
+        {
+            Values.Add(MakeShared<FJsonValueObject>(Record.Json));
+        }
+        return Values;
+    };
+
+    TSharedRef<FJsonObject> Audit = MakeShared<FJsonObject>();
+    Audit->SetNumberField(
+        TEXT("callCount"),
+        ResolvedCalls.Num() + UnresolvedCalls.Num() + OtherSelfTargetCalls.Num()
+    );
+    Audit->SetNumberField(TEXT("playCallCount"), OutPlayCallCount);
+    Audit->SetNumberField(TEXT("resolvedActorLiteralCallCount"), ResolvedCalls.Num());
+    Audit->SetNumberField(TEXT("unresolvedActorLiteralCallCount"), UnresolvedCalls.Num());
+    Audit->SetNumberField(TEXT("otherSelfTargetCallCount"), OtherSelfTargetCalls.Num());
+    Audit->SetNumberField(TEXT("resolvedActorLiteralPlayCallCount"), OutResolvedPlayCallCount);
+    Audit->SetNumberField(TEXT("unresolvedActorLiteralPlayCallCount"), OutUnresolvedPlayCallCount);
+    Audit->SetNumberField(
+        TEXT("otherSelfTargetPlayCallCount"),
+        OutOtherSelfTargetPlayCallCount
+    );
+    Audit->SetObjectField(
+        TEXT("resolvedActorLiteralControlCounts"),
+        CountsToJson(ResolvedControlCounts)
+    );
+    Audit->SetObjectField(
+        TEXT("unresolvedActorLiteralControlCounts"),
+        CountsToJson(UnresolvedControlCounts)
+    );
+    Audit->SetObjectField(
+        TEXT("otherSelfTargetControlCounts"),
+        CountsToJson(OtherSelfTargetControlCounts)
+    );
+    Audit->SetArrayField(TEXT("resolvedActorLiteralCalls"), RecordsToJson(ResolvedCalls));
+    Audit->SetArrayField(TEXT("unresolvedActorLiteralCalls"), RecordsToJson(UnresolvedCalls));
+    Audit->SetArrayField(TEXT("otherSelfTargetCalls"), RecordsToJson(OtherSelfTargetCalls));
+    return Audit;
+}
+
 bool CaptureSequencePlaybackControlChains(
     const TMap<FString, UEdGraph*>& GraphsByPath,
     ALevelSequenceActor* SequenceActor,
@@ -2077,6 +2360,19 @@ bool CapturePostRewriteLevelBlueprintAudit(
     }
 
     int32 MatineePlayCallCount = 0;
+    int32 ResolvedMatineePlayCallCount = 0;
+    int32 UnresolvedMatineePlayCallCount = 0;
+    int32 OtherSelfTargetMatineePlayCallCount = 0;
+    int32 OtherSelfTargetMatineeControlCallCount = 0;
+    TSharedRef<FJsonObject> MatineePlaybackControlAudit =
+        CaptureMatineePlaybackControlAudit(
+            GraphsByPath,
+            MatineePlayCallCount,
+            ResolvedMatineePlayCallCount,
+            UnresolvedMatineePlayCallCount,
+            OtherSelfTargetMatineePlayCallCount,
+            OtherSelfTargetMatineeControlCallCount
+        );
     int32 SourceMatineePlayCallCount = 0;
     int32 SequencePlayerPlayCallCount = 0;
     int32 ValidSequencePlaybackChainCount = 0;
@@ -2095,7 +2391,6 @@ bool CapturePostRewriteLevelBlueprintAudit(
             UFunction* TargetFunction = CallNode->GetTargetFunction();
             if (TargetFunction == MatineePlayFunction)
             {
-                ++MatineePlayCallCount;
                 if (FunctionCallTargetsObject(CallNode, SourceActor))
                 {
                     ++SourceMatineePlayCallCount;
@@ -2224,6 +2519,7 @@ bool CapturePostRewriteLevelBlueprintAudit(
         bAllEventFirstHopsMatch &&
         SourceMatineePlayCallCount == 0 &&
         SourceMatineePlaybackControlCallCount == 0 &&
+        OtherSelfTargetMatineeControlCallCount == 0 &&
         SequencePlayerPlayCallCount > 0 &&
         ValidSequencePlaybackChainCount == SequencePlayerPlayCallCount &&
         SequencePlayerControlCallCount == ExpectedPlaybackControlCount &&
@@ -2243,6 +2539,19 @@ bool CapturePostRewriteLevelBlueprintAudit(
     OutAudit->SetArrayField(TEXT("events"), EventValues);
     OutAudit->SetBoolField(TEXT("allEventFirstHopsMatch"), bAllEventFirstHopsMatch);
     OutAudit->SetNumberField(TEXT("matineePlayCallCount"), MatineePlayCallCount);
+    OutAudit->SetNumberField(
+        TEXT("resolvedMatineePlayCallCount"),
+        ResolvedMatineePlayCallCount
+    );
+    OutAudit->SetNumberField(
+        TEXT("unresolvedMatineePlayCallCount"),
+        UnresolvedMatineePlayCallCount
+    );
+    OutAudit->SetNumberField(
+        TEXT("otherSelfTargetMatineePlayCallCount"),
+        OtherSelfTargetMatineePlayCallCount
+    );
+    OutAudit->SetObjectField(TEXT("matineePlaybackControlAudit"), MatineePlaybackControlAudit);
     OutAudit->SetNumberField(TEXT("sourceMatineePlayCallCount"), SourceMatineePlayCallCount);
     OutAudit->SetNumberField(
         TEXT("sourceMatineePlaybackControlCallCount"),
@@ -2586,6 +2895,19 @@ bool ApplySourceMatineeCleanup(
     int32 RemainingTargetControllers = 0;
     int32 RemainingTargetLiterals = 0;
     int32 RemainingMatineePlayCalls = 0;
+    int32 RemainingResolvedMatineePlayCalls = 0;
+    int32 RemainingUnresolvedMatineePlayCalls = 0;
+    int32 RemainingOtherSelfTargetMatineePlayCalls = 0;
+    int32 RemainingOtherSelfTargetMatineeControlCalls = 0;
+    TSharedRef<FJsonObject> RemainingMatineePlaybackControlAudit =
+        CaptureMatineePlaybackControlAudit(
+            GraphsByPath,
+            RemainingMatineePlayCalls,
+            RemainingResolvedMatineePlayCalls,
+            RemainingUnresolvedMatineePlayCalls,
+            RemainingOtherSelfTargetMatineePlayCalls,
+            RemainingOtherSelfTargetMatineeControlCalls
+        );
     int32 SequencePlayerPlayCallCount = 0;
     int32 ValidSequencePlaybackChainCount = 0;
     int32 SequencePlayerControlCallCount = 0;
@@ -2596,14 +2918,6 @@ bool ApplySourceMatineeCleanup(
     int32 VerifiedCustomEvents = 0;
     bool bAllEventFirstHopsPreserved = true;
     TArray<TSharedPtr<FJsonValue>> EventValues;
-    UFunction* MatineePlayFunction = AMatineeActor::StaticClass()->FindFunctionByName(
-        GET_FUNCTION_NAME_CHECKED(AMatineeActor, Play));
-    if (MatineePlayFunction == nullptr)
-    {
-        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR source_cleanup_play_function_missing"));
-        return false;
-    }
-
     for (const FName& CustomEventName : ExpectedCustomEvents)
     {
         TArray<UK2Node_CustomEvent*> Matches;
@@ -2664,14 +2978,6 @@ bool ApplySourceMatineeCleanup(
                 if (Literal->GetObjectRef() == SourceActor)
                 {
                     ++RemainingTargetLiterals;
-                }
-            }
-            if (UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node))
-            {
-                UFunction* TargetFunction = CallNode->GetTargetFunction();
-                if (TargetFunction == MatineePlayFunction)
-                {
-                    ++RemainingMatineePlayCalls;
                 }
             }
         }
@@ -2773,6 +3079,7 @@ bool ApplySourceMatineeCleanup(
         RemainingTargetControllers == 0 &&
         RemainingTargetLiterals == 0 &&
         RemainingSourceMatineePlaybackControlCalls == 0 &&
+        RemainingOtherSelfTargetMatineeControlCalls == 0 &&
         SequencePlayerControlCallCount == ExpectedPlaybackControlCount &&
         ValidSequencePlaybackControlChainCount == ExpectedPlaybackControlCount &&
         RemainingWorldActors == 0 &&
@@ -2791,6 +3098,22 @@ bool ApplySourceMatineeCleanup(
     OutAudit->SetNumberField(TEXT("remainingTargetControllerCount"), RemainingTargetControllers);
     OutAudit->SetNumberField(TEXT("remainingTargetLiteralCount"), RemainingTargetLiterals);
     OutAudit->SetNumberField(TEXT("remainingMatineePlayCallCount"), RemainingMatineePlayCalls);
+    OutAudit->SetNumberField(
+        TEXT("remainingResolvedMatineePlayCallCount"),
+        RemainingResolvedMatineePlayCalls
+    );
+    OutAudit->SetNumberField(
+        TEXT("remainingUnresolvedMatineePlayCallCount"),
+        RemainingUnresolvedMatineePlayCalls
+    );
+    OutAudit->SetNumberField(
+        TEXT("remainingOtherSelfTargetMatineePlayCallCount"),
+        RemainingOtherSelfTargetMatineePlayCalls
+    );
+    OutAudit->SetObjectField(
+        TEXT("remainingMatineePlaybackControlAudit"),
+        RemainingMatineePlaybackControlAudit
+    );
     OutAudit->SetNumberField(
         TEXT("remainingSourceMatineePlaybackControlCallCount"),
         RemainingSourceMatineePlaybackControlCalls
@@ -2960,6 +3283,7 @@ bool CaptureGeneratedSequenceAudit(
     AMatineeActor* SourceActor,
     ALevelSequenceActor* SequenceActor,
     ULevelSequence* Sequence,
+    const TArray<TSharedPtr<FJsonValue>>& SourcePlaybackControlCalls,
     TSharedPtr<FJsonObject>& OutAudit
 )
 {
@@ -3237,7 +3561,7 @@ bool CaptureGeneratedSequenceAudit(
         TEXT("engineBasis"),
         TEXT("UE 4.27 CopyInterpEventTrack creates empty MatineeEvent endpoints in the Sequence Director; MovieSceneEventUtils binds those endpoints only inside the director blueprint.")
     );
-    RewritePlan->SetArrayField(TEXT("playbackControlCalls"), CapturePlaybackControlCalls(SourceActor));
+    RewritePlan->SetArrayField(TEXT("playbackControlCalls"), SourcePlaybackControlCalls);
 
     UEdGraph* ControllerGraph = nullptr;
     UK2Node_MatineeController* Controller = FindMatineeControllerNode(SourceActor, ControllerGraph);
@@ -3802,6 +4126,21 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
 
         CopyMatineePlaybackSettingsToSequenceActor(Actor, NewActor.Get());
 
+        // Capture source call identities before playback rewrite destroys those
+        // nodes. The generated-sequence audit is assembled after all rewrites.
+        const TArray<TSharedPtr<FJsonValue>> SourcePlaybackControlCalls =
+            CapturePlaybackControlCalls(Actor);
+        if (SourcePlaybackControlCalls.Num() <= 0)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR playback_plan_control_not_found actor=%s"),
+                *ActorLabel
+            );
+            return 32;
+        }
+
         TSharedPtr<FJsonObject> EventRewriteResult;
         if (!ApplyDirectorEventRewrite(Actor, Sequence, EventRewriteResult))
         {
@@ -3815,6 +4154,18 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         }
         const int32 RewrittenPlaybackControlCount =
             PlaybackRewriteResult->GetIntegerField(TEXT("retargetedControlCount"));
+        if (SourcePlaybackControlCalls.Num() != RewrittenPlaybackControlCount)
+        {
+            UE_LOG(
+                LogZenMatineeBridge,
+                Error,
+                TEXT("ZEN_BRIDGE_ERROR playback_plan_rewrite_count_mismatch actor=%s plan=%d rewritten=%d"),
+                *ActorLabel,
+                SourcePlaybackControlCalls.Num(),
+                RewrittenPlaybackControlCount
+            );
+            return 33;
+        }
 
         TSharedPtr<FJsonObject> PostRewriteLevelBlueprintAudit;
         if (!CapturePostRewriteLevelBlueprintAudit(
@@ -3829,7 +4180,13 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         }
 
         TSharedPtr<FJsonObject> SequenceAudit;
-        if (!CaptureGeneratedSequenceAudit(Actor, NewActor.Get(), Sequence, SequenceAudit))
+        if (!CaptureGeneratedSequenceAudit(
+            Actor,
+            NewActor.Get(),
+            Sequence,
+            SourcePlaybackControlCalls,
+            SequenceAudit
+        ))
         {
             return 30;
         }

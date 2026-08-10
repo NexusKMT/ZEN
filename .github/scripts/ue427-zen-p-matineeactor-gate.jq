@@ -38,6 +38,132 @@ def valid_control_chain($audit):
     .referencedObject == $audit.levelSequenceActor.actorPath
   );
 
+def matinee_control_signature:
+  {
+    node: (.objectPath | split(".")[-1]),
+    nodeGuid,
+    functionName,
+    selfLiteral: (.selfLiteralNode | split(".")[-1]),
+    selfLiteralNodeGuid,
+    selfLiteralReferencedObject,
+    selfLinkCount,
+    selfLiteralLinkCount,
+    incomingExecCount,
+    outgoingExecCount,
+    executionEntryReachable
+  };
+
+def known_deferred_matinee_controls($control_audit):
+  ($control_audit |
+    .callCount == 7 and
+    .playCallCount == 3 and
+    .resolvedActorLiteralCallCount == 3 and
+    .unresolvedActorLiteralCallCount == 4 and
+    .otherSelfTargetCallCount == 0 and
+    .resolvedActorLiteralPlayCallCount == 1 and
+    .unresolvedActorLiteralPlayCallCount == 2 and
+    .otherSelfTargetPlayCallCount == 0 and
+    .resolvedActorLiteralControlCounts == {"Pause": 2, "Play": 1} and
+    .unresolvedActorLiteralControlCounts == {"Pause": 1, "Play": 2, "SetPosition": 1} and
+    .otherSelfTargetControlCounts == {} and
+    (.otherSelfTargetCalls | length) == 0 and
+    ([.resolvedActorLiteralCalls[] | matinee_control_signature] | sort_by(.node)) == [
+      {
+        "node": "K2Node_CallFunction_118301",
+        "nodeGuid": "33010D334437BF8FA55D798B8A943761",
+        "functionName": "Pause",
+        "selfLiteral": "K2Node_Literal_1030",
+        "selfLiteralNodeGuid": "A780163E49B36BA493FBBA8593703BF6",
+        "selfLiteralReferencedObject": "/Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 0,
+        "executionEntryReachable": true
+      },
+      {
+        "node": "K2Node_CallFunction_1915238",
+        "nodeGuid": "63F5FB1D44FBC5F1CD28B19D1E703E66",
+        "functionName": "Play",
+        "selfLiteral": "K2Node_Literal_504",
+        "selfLiteralNodeGuid": "F6DB15B04E3A63EC46989A82EF210CE5",
+        "selfLiteralReferencedObject": "/Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 1,
+        "executionEntryReachable": true
+      },
+      {
+        "node": "K2Node_CallFunction_2751992",
+        "nodeGuid": "293D72A84780A5CCE58DEFABB7297E1F",
+        "functionName": "Pause",
+        "selfLiteral": "K2Node_Literal_504",
+        "selfLiteralNodeGuid": "F6DB15B04E3A63EC46989A82EF210CE5",
+        "selfLiteralReferencedObject": "/Game/Maps/Zen_P.Zen_P:PersistentLevel.MatineeActor_3",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 0,
+        "executionEntryReachable": true
+      }
+    ] and
+    ([.unresolvedActorLiteralCalls[] | matinee_control_signature] | sort_by(.node)) == [
+      {
+        "node": "K2Node_CallFunction_357829",
+        "nodeGuid": "157FEE274C8EBA0E7735368B1984712F",
+        "functionName": "Play",
+        "selfLiteral": "K2Node_Literal_46",
+        "selfLiteralNodeGuid": "160C243D4C72F7DC480027AE53085FC0",
+        "selfLiteralReferencedObject": "",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 0,
+        "outgoingExecCount": 0,
+        "executionEntryReachable": false
+      },
+      {
+        "node": "K2Node_CallFunction_357986",
+        "nodeGuid": "D6A4EB744E1C600AEAA8DE95F9D5F567",
+        "functionName": "SetPosition",
+        "selfLiteral": "K2Node_Literal_46",
+        "selfLiteralNodeGuid": "160C243D4C72F7DC480027AE53085FC0",
+        "selfLiteralReferencedObject": "",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 1,
+        "executionEntryReachable": false
+      },
+      {
+        "node": "K2Node_CallFunction_373072",
+        "nodeGuid": "8E6373D1451055BC7AA27D816851DE41",
+        "functionName": "Play",
+        "selfLiteral": "K2Node_Literal_46",
+        "selfLiteralNodeGuid": "160C243D4C72F7DC480027AE53085FC0",
+        "selfLiteralReferencedObject": "",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 1,
+        "executionEntryReachable": false
+      },
+      {
+        "node": "K2Node_CallFunction_373489",
+        "nodeGuid": "C653867A44E50C4D4BCB88A8CE60F258",
+        "functionName": "Pause",
+        "selfLiteral": "K2Node_Literal_46",
+        "selfLiteralNodeGuid": "160C243D4C72F7DC480027AE53085FC0",
+        "selfLiteralReferencedObject": "",
+        "selfLinkCount": 1,
+        "selfLiteralLinkCount": 1,
+        "incomingExecCount": 1,
+        "outgoingExecCount": 0,
+        "executionEntryReachable": false
+      }
+    ]
+  );
+
 .engineVersion == "4.27.2" and
 .targetMap == "/Game/Maps/Zen_P" and
 .expectedActor == "MatineeActor" and
@@ -222,7 +348,11 @@ end) and
       .customEventFirstHopCount == 1 and
       .controllerFirstHops == .customEventFirstHops
     ) and
-    .matineePlayCallCount == 1 and
+    .matineePlayCallCount == 3 and
+    .resolvedMatineePlayCallCount == 1 and
+    .unresolvedMatineePlayCallCount == 2 and
+    .otherSelfTargetMatineePlayCallCount == 0 and
+    known_deferred_matinee_controls(.matineePlaybackControlAudit) and
     .sourceMatineePlayCallCount == 0 and
     .sourceMatineePlaybackControlCallCount == 0 and
     .sequencePlayerPlayCallCount == 1 and
@@ -261,7 +391,12 @@ end) and
       .sourceActorLiteralLinkCountBeforeRemoval == 0 and
       .remainingTargetControllerCount == 0 and
       .remainingTargetLiteralCount == 0 and
-      .remainingMatineePlayCallCount == 1 and
+      .remainingMatineePlayCallCount == 3 and
+      .remainingResolvedMatineePlayCallCount == 1 and
+      .remainingUnresolvedMatineePlayCallCount == 2 and
+      .remainingOtherSelfTargetMatineePlayCallCount == 0 and
+      .remainingMatineePlaybackControlAudit == $audit.postRewriteLevelBlueprint.matineePlaybackControlAudit and
+      known_deferred_matinee_controls(.remainingMatineePlaybackControlAudit) and
       .remainingSourceMatineePlaybackControlCallCount == 0 and
       .sequencePlayerPlayCallCount == 1 and
       .validSequencePlaybackChainCount == 1 and

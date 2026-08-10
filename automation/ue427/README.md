@@ -115,6 +115,18 @@ Conversion is deliberately scoped to the two targets above. The additional
 `Zen_P:MatineeActor3` is inventoried and asserted to remain after the second
 target cleanup, but is not converted in this stage.
 
+`Zen_P` also contains one source-authored `Unknown` Matinee actor literal. Its
+four linked `Play`, `Pause`, and `SetPosition` calls predate the bridge and are
+not references to either migration target. The bridge preserves this historical
+graph content, but classifies every remaining Matinee control by its self target
+and audits whether its execution chain reaches an event/controller entry. The
+target gate accepts only the exact known node and literal GUIDs: all four
+unresolved calls must remain disconnected from an execution entry, while the
+three resolved calls must still target the deliberately deferred
+`MatineeActor3`. Any additional or differently wired Matinee control fails the
+gate. Source playback-control identities are captured before their nodes are
+rewritten, so the recorded plan and the final rewrite count must also agree.
+
 Each invocation receives an explicit target-specific source and Sequencer track
 contract. The Movie target requires Director, Fade, Sound, Event, Toggle,
 Movement, and Float tracks and their corresponding outputs. The first `Zen_P`
