@@ -60,18 +60,22 @@ endpoint executes the built-in `CE ZenSeq_*` console command for a new Level
 Blueprint custom event that joins the existing MatineeController execution
 chain. This name-based dispatch avoids serializing a LevelScriptActor literal
 or its map-owned generated class into the standalone Level Sequence package.
-Level Blueprint Play calls that targeted the legacy Matinee actor are
-retargeted through the generated LevelSequenceActor player. Playback settings
+Level Blueprint `Play`, `Pause`, and `Stop` calls that target a selected legacy
+Matinee actor are retargeted to the same function on the generated
+LevelSequenceActor player. Each rewrite records the exact incoming and outgoing
+execution-pin identities before and after replacement; a changed link fails
+the commandlet. Playback settings
 such as force-start time are copied onto the LevelSequenceActor. By default,
 the legacy Matinee actor and MatineeController node remain for comparison.
 After both Blueprint rewrites compile, the report captures the final Level
-Blueprint graphs separately from the preflight snapshots. It requires exactly
-the seven `ZenSeq_*` custom events, proves that each event reaches the same
-first-hop execution pin as its source MatineeController output, proves the
-LevelSequenceActor literal and `GetSequencePlayer` data chain into `Play`, and
-requires the preserved incoming and outgoing execution links. Any remaining
-Matinee `Play` call in the target Level Blueprint or either Blueprint compile
-status reporting an error fails the commandlet and the workflow audit.
+Blueprint graphs separately from the preflight snapshots. It requires the
+exact target-specific `ZenSeq_*` custom events, proves that each event reaches
+the same first-hop execution pin as its source MatineeController output, proves
+every LevelSequenceActor literal and `GetSequencePlayer` data chain into the
+corresponding playback control, and requires the preserved incoming and
+outgoing execution links. Any remaining source-targeted Matinee playback
+control or either Blueprint compile status reporting an error fails the
+commandlet and the workflow audit.
 The generated Level Sequence package is then saved explicitly and its on-disk
 size is verified before the bridge reports success; an in-memory asset path is
 not accepted as evidence that the selected UE 5 runtime can load the conversion
@@ -85,31 +89,37 @@ behavior to translate.
 Source cleanup is an explicit opt-in through `-RemoveSourceMatinee`, passed by
 the workflow only when `remove_source_matinee=true`. After the post-rewrite
 audit and explicit Level Sequence package save, the commandlet requires exactly
-one Controller for the target source Actor and exactly one source-Actor literal
-with zero pin links. It deletes those two Blueprint nodes, recompiles without a
-Blueprint error, and verifies the final graph contains no target Controller,
-source-Actor literal, or Matinee `Play` call. It also rechecks all seven
-`ZenSeq_*` first-hop destinations before deleting the target Actor from the
-world. After deletion it proves the generated Sequence Actor remains unique,
-revalidates the complete `LevelSequenceActor -> GetSequencePlayer -> Play` data
-and execution chain, and captures the resulting graph.
+one Controller for the target source Actor and at least one source-Actor
+literal, with every literal reduced to zero pin links by the verified playback
+rewrite. It deletes those Blueprint nodes, recompiles without a Blueprint
+error, and verifies the final graph contains no target Controller, target
+source-Actor literal, or source-targeted Matinee playback control. It also
+rechecks every target `ZenSeq_*` first-hop destination before deleting the
+target Actor from the world. After deletion it proves the generated Sequence
+Actor remains unique, revalidates every complete
+`LevelSequenceActor -> GetSequencePlayer -> playback control` data and
+execution chain, inventories the remaining Matinee actors in that map, and
+captures the resulting graph.
 
-This deletion is scoped only to
-`/Game/Maps/Zen_Movie:MatineeActor_Movie` in the workflow's writable UE 4.27
-copy. The clean expanded UE 4.23 input is never overwritten, and the two
-inventoried actors in `Zen_P` remain untouched. When the cleaned output is
-opened by the selected UE 5 probe, any `CreateExport` warning is a hard failure;
-retained-source mode continues to require its exact three known transitional
-warnings. The workflow currently allows exact `5.4.4` and `5.5.4` runtime
-checks, with `5.4.4` as the default.
+The workflow invokes the commandlet serially for
+`/Game/Maps/Zen_Movie:MatineeActor_Movie` and
+`/Game/Maps/Zen_P:MatineeActor` in its writable UE 4.27 copy. The clean expanded
+UE 4.23 input is never overwritten, and `Zen_P:MatineeActor3` remains untouched.
+When the cleaned output is opened by the selected UE 5 probe, only the exact
+three known transitional warnings for that deferred actor are accepted;
+retained-source mode requires the exact nine-warning set for all three legacy
+actors. The workflow currently allows exact `5.4.4` and `5.5.4` runtime checks,
+with `5.4.4` as the default.
 
-Conversion is deliberately scoped to
-`/Game/Maps/Zen_Movie:MatineeActor_Movie`; the two additional Matinee actors
-observed while `Zen_P` was loaded are inventoried but not modified.
+Conversion is deliberately scoped to the two targets above. The additional
+`Zen_P:MatineeActor3` is inventoried and asserted to remain after the second
+target cleanup, but is not converted in this stage.
 
-The commandlet requires the target actor's Director, Fade, Sound, Event, and
-Toggle tracks, then requires the generated Sequencer asset to contain Camera
-Cut, Fade, Audio, Event, and Particle tracks before it saves anything.
+Each invocation receives an explicit target-specific source and Sequencer track
+contract. The Movie target requires Director, Fade, Sound, Event, Toggle,
+Movement, and Float tracks and their corresponding outputs. The first `Zen_P`
+target has no Sound track, so it instead requires Director, Fade, Event,
+Toggle, Movement, and Float tracks and the matching non-audio outputs.
 
 Epic's 4.27 converter emits one false-positive `Unsupported track 'Fade'.`
 warning from its generic group pass, then converts that Fade track in its
@@ -133,10 +143,11 @@ actor's playback settings. Relevant official sources:
 - [Custom Events (UE 4.27)](https://dev.epicgames.com/documentation/en-us/unreal-engine/custom-events-in-unreal-engine?application_version=4.27)
 - [Execute Console Command](https://dev.epicgames.com/documentation/en-us/unreal-engine/BlueprintAPI/Development/ExecuteConsoleCommand)
 
-The successful command writes:
+The successful serial conversion writes:
 
 ```text
-Saved/ZenMigration/ue427-bridge-report.json
+Saved/ZenMigration/ue427-bridge-report-zen-movie.json
+Saved/ZenMigration/ue427-bridge-report-zen-p-matineeactor.json
 ```
 
 The adapter deliberately targets UE 4.27.2. The workflow pulls Epic's documented
