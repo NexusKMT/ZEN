@@ -45,6 +45,20 @@ because Epic's 4.27 converter creates generic `MatineeEvent` endpoint names;
 the original Matinee event name is otherwise only present in a temporary map
 during conversion.
 
+UE 4.27 event endpoints cannot call Level Blueprint graphs by themselves. They
+are `UK2Node_CustomEvent` nodes owned by the Sequence Director blueprint and are
+invoked only through Sequencer's director compilation path
+(`MovieSceneEventUtils`). The official converter leaves those endpoints
+unconnected. The bridge therefore records an `eventRewritePlan` that pairs each
+source event name and frame with its Director endpoint and the exact Level
+Blueprint execution closure currently driven by `K2Node_MatineeController`,
+plus every Level Blueprint Play/Pause/Stop/SetPosition call that still targets
+the legacy Matinee actor. It also records the generated `ALevelSequenceActor`
+path and playback settings so play-control rewrites have a concrete target.
+No Blueprint nodes are rewritten yet; the plan is the audited precondition for
+that later step.
+
+
 An unconnected actor literal is still a serialized hard reference. It is
 reported and must be removed during graph cleanup even though it has no runtime
 behavior to translate.

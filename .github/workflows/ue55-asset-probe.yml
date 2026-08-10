@@ -611,6 +611,39 @@ jobs:
               .mappingVerified == true and
               .sourceActor == "/Game/Maps/Zen_Movie.Zen_Movie:PersistentLevel.MatineeActor_Movie" and
               .sequence == "/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence" and
+              .levelSequenceActor.present == true and
+              (.levelSequenceActor.actorPath | length) > 0 and
+              .levelSequenceActor.levelSequencePath == "/Game/Maps/MatineeActor_MovieLevelSequence.MatineeActor_MovieLevelSequence" and
+              .levelSequenceActor.playbackSettings.autoPlay == false and
+              .levelSequenceActor.playbackSettings.playRate == 1 and
+              .eventRewritePlan.endpointsInvokeLevelBlueprintDirectly == false and
+              .eventRewritePlan.endpointInvocationModel == "sequence_director_custom_event_only" and
+              .eventRewritePlan.eventPlanCount == 7 and
+              (.eventRewritePlan.eventPlans | length) == 7 and
+              all(.eventRewritePlan.eventPlans[];
+                (.sourceEventName | length) > 0 and
+                (.endpointObjectPath | length) > 0 and
+                (.controllerPinName | length) > 0 and
+                .controllerPinLinkCount >= 1 and
+                (.execClosure | length) >= 1
+              ) and
+              ([.eventRewritePlan.eventPlans[].sourceEventName] | sort) == [
+                "ActivateAmbient",
+                "DeactivateSim",
+                "DisableFish",
+                "EnableFish",
+                "FadeOutMix",
+                "Fountain",
+                "SwitchLevel"
+              ] and
+              (.eventRewritePlan.playbackControlCalls | length) >= 1 and
+              all(.eventRewritePlan.playbackControlCalls[];
+                .functionName == "Play" or
+                .functionName == "Pause" or
+                .functionName == "Stop" or
+                .functionName == "SetPosition" or
+                .functionName == "Reverse"
+              ) and
               .sourceEventTrackCount == 1 and
               .targetEventTrackCount == 1 and
               .eventKeyCount == ([.eventTracks[].keys[]] | length) and
@@ -747,6 +780,8 @@ jobs:
           blueprint_nodes="$(jq '[.blueprintGraphs[].nodes[]] | length' "$report")"
           event_keys="$(jq '.generatedSequenceAudits[0].eventKeyCount' "$report")"
           event_endpoints="$(jq '.generatedSequenceAudits[0].uniqueEndpointCount' "$report")"
+          event_rewrite_plans="$(jq '.generatedSequenceAudits[0].eventRewritePlan.eventPlanCount' "$report")"
+          sequence_actor="$(jq -r '.generatedSequenceAudits[0].levelSequenceActor.actorPath' "$report")"
           sequence="$(jq -r '.generatedSequences[0]' "$report")"
           {
             echo
@@ -772,6 +807,8 @@ jobs:
               "$blueprint_graphs" "$blueprint_nodes"
             printf '| Verified converted event keys / Director endpoints | `%s / %s` |\n' \
               "$event_keys" "$event_endpoints"
+            printf '| Event rewrite plans / LevelSequenceActor | `%s` / `%s` |\n' \
+              "$event_rewrite_plans" "$sequence_actor"
             echo '| Required source and Sequencer tracks | `verified` |'
           } >> "$GITHUB_STEP_SUMMARY"
 

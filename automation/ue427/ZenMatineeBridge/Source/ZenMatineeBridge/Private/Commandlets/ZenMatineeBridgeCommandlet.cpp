@@ -5,6 +5,7 @@
 #include "EdGraph/EdGraph.h"
 #include "EdGraph/EdGraphNode.h"
 #include "EdGraph/EdGraphPin.h"
+#include "EdGraphSchema_K2.h"
 #include "Editor.h"
 #include "Engine/Blueprint.h"
 #include "Engine/Level.h"
@@ -19,6 +20,9 @@
 #include "K2Node_Literal.h"
 #include "K2Node_MacroInstance.h"
 #include "K2Node_MatineeController.h"
+#include "Engine/LevelScriptBlueprint.h"
+#include "K2Node_CustomEvent.h"
+#include "MovieSceneSequencePlayer.h"
 #include "K2Node_Variable.h"
 #include "Matinee/InterpData.h"
 #include "Matinee/InterpGroup.h"
@@ -495,8 +499,307 @@ TSharedRef<FJsonObject> CaptureBlueprintGraph(UEdGraph* Graph)
     return GraphJson;
 }
 
+
+TSharedRef<FJsonObject> CaptureDataPinSnapshot(UEdGraphPin* Pin)
+{
+    TSharedRef<FJsonObject> PinJson = MakeShared<FJsonObject>();
+    PinJson->SetStringField(TEXT("name"), Pin->PinName.ToString());
+    PinJson->SetStringField(TEXT("direction"), PinDirectionToString(Pin->Direction));
+    PinJson->SetStringField(TEXT("category"), Pin->PinType.PinCategory.ToString());
+    PinJson->SetStringField(TEXT("defaultValue"), Pin->DefaultValue);
+    PinJson->SetStringField(
+        TEXT("defaultObject"),
+        Pin->DefaultObject != nullptr ? Pin->DefaultObject->GetPathName() : FString()
+    );
+
+    TArray<TSharedPtr<FJsonValue>> LinkValues;
+    for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+    {
+        if (LinkedPin == nullptr || LinkedPin->GetOwningNodeUnchecked() == nullptr)
+        {
+            continue;
+        }
+
+        UEdGraphNode* LinkedNode = LinkedPin->GetOwningNode();
+        TSharedPtr<FJsonObject> LinkJson = MakeShared<FJsonObject>();
+        AddNodeIdentity(LinkJson.ToSharedRef(), LinkedNode);
+        LinkJson->SetStringField(TEXT("pinName"), LinkedPin->PinName.ToString());
+        LinkValues.Add(MakeShared<FJsonValueObject>(LinkJson));
+    }
+    PinJson->SetNumberField(TEXT("linkCount"), LinkValues.Num());
+    PinJson->SetArrayField(TEXT("links"), LinkValues);
+    return PinJson;
+}
+
+TArray<TSharedPtr<FJsonValue>> CaptureExecClosure(UEdGraphPin* StartOutputPin, int32 MaxNodes = 64)
+{
+    TArray<TSharedPtr<FJsonValue>> Steps;
+    if (StartOutputPin == nullptr)
+    {
+        return Steps;
+    }
+
+    TSet<UEdGraphNode*> VisitedNodes;
+    TArray<UEdGraphPin*> Queue;
+    for (UEdGraphPin* LinkedPin : StartOutputPin->LinkedTo)
+    {
+        if (LinkedPin != nullptr)
+        {
+            Queue.Add(LinkedPin);
+        }
+    }
+
+    while (Queue.Num() > 0 && Steps.Num() < MaxNodes)
+    {
+        UEdGraphPin* InputPin = Queue[0];
+        Queue.RemoveAt(0);
+        if (InputPin == nullptr || InputPin->GetOwningNodeUnchecked() == nullptr)
+        {
+            continue;
+        }
+
+        UEdGraphNode* Node = InputPin->GetOwningNode();
+        if (VisitedNodes.Contains(Node))
+        {
+            continue;
+        }
+        VisitedNodes.Add(Node);
+
+        TSharedPtr<FJsonObject> StepJson = MakeShared<FJsonObject>();
+        AddNodeIdentity(StepJson.ToSharedRef(), Node);
+        StepJson->SetStringField(TEXT("enteredViaPin"), InputPin->PinName.ToString());
+
+        TArray<TSharedPtr<FJsonValue>> DataPins;
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (Pin == nullptr || Pin->PinType.PinCategory == UEdGraphSchema_K2::PC_Exec)
+            {
+                continue;
+            }
+
+            const bool bHasDefault =
+                !Pin->DefaultValue.IsEmpty() ||
+                Pin->DefaultObject != nullptr ||
+                Pin->LinkedTo.Num() > 0;
+            if (!bHasDefault)
+            {
+                continue;
+            }
+            DataPins.Add(MakeShared<FJsonValueObject>(CaptureDataPinSnapshot(Pin)));
+        }
+        StepJson->SetNumberField(TEXT("dataPinCount"), DataPins.Num());
+        StepJson->SetArrayField(TEXT("dataPins"), DataPins);
+        Steps.Add(MakeShared<FJsonValueObject>(StepJson));
+
+        for (UEdGraphPin* Pin : Node->Pins)
+        {
+            if (Pin == nullptr ||
+                Pin->Direction != EGPD_Output ||
+                Pin->PinType.PinCategory != UEdGraphSchema_K2::PC_Exec)
+            {
+                continue;
+            }
+            for (UEdGraphPin* LinkedPin : Pin->LinkedTo)
+            {
+                if (LinkedPin != nullptr)
+                {
+                    Queue.Add(LinkedPin);
+                }
+            }
+        }
+    }
+
+    return Steps;
+}
+
+UK2Node_MatineeController* FindMatineeControllerNode(AMatineeActor* SourceActor, UEdGraph*& OutGraph)
+{
+    OutGraph = nullptr;
+    if (SourceActor == nullptr || SourceActor->GetLevel() == nullptr)
+    {
+        return nullptr;
+    }
+
+    ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(
+        SourceActor->GetLevel()->GetLevelScriptBlueprint(true)
+    );
+    if (LevelBlueprint == nullptr)
+    {
+        return nullptr;
+    }
+
+    for (UEdGraph* Graph : LevelBlueprint->UbergraphPages)
+    {
+        if (Graph == nullptr)
+        {
+            continue;
+        }
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UK2Node_MatineeController* Controller = Cast<UK2Node_MatineeController>(Node);
+            if (Controller != nullptr && Controller->MatineeActor == SourceActor)
+            {
+                OutGraph = Graph;
+                return Controller;
+            }
+        }
+    }
+    return nullptr;
+}
+
+TArray<TSharedPtr<FJsonValue>> CapturePlaybackControlCalls(AMatineeActor* SourceActor)
+{
+    TArray<TSharedPtr<FJsonValue>> Controls;
+    if (SourceActor == nullptr || SourceActor->GetLevel() == nullptr)
+    {
+        return Controls;
+    }
+
+    ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(
+        SourceActor->GetLevel()->GetLevelScriptBlueprint(true)
+    );
+    if (LevelBlueprint == nullptr)
+    {
+        return Controls;
+    }
+
+    const TArray<FName> ControlNames = {
+        FName(TEXT("Play")),
+        FName(TEXT("Pause")),
+        FName(TEXT("Stop")),
+        FName(TEXT("SetPosition")),
+        FName(TEXT("Reverse"))
+    };
+
+    for (UEdGraph* Graph : LevelBlueprint->UbergraphPages)
+    {
+        if (Graph == nullptr)
+        {
+            continue;
+        }
+        for (UEdGraphNode* Node : Graph->Nodes)
+        {
+            UK2Node_CallFunction* CallNode = Cast<UK2Node_CallFunction>(Node);
+            if (CallNode == nullptr)
+            {
+                continue;
+            }
+
+            const FName FunctionName = CallNode->GetFunctionName();
+            if (!ControlNames.Contains(FunctionName))
+            {
+                continue;
+            }
+
+            UFunction* TargetFunction = CallNode->GetTargetFunction();
+            if (TargetFunction == nullptr ||
+                TargetFunction->GetOuterUClass() == nullptr ||
+                TargetFunction->GetOuterUClass()->GetName() != TEXT("MatineeActor"))
+            {
+                continue;
+            }
+
+            bool bTargetsSourceActor = false;
+            if (UEdGraphPin* SelfPin = CallNode->FindPin(UEdGraphSchema_K2::PN_Self))
+            {
+                for (UEdGraphPin* LinkedPin : SelfPin->LinkedTo)
+                {
+                    UK2Node_Literal* Literal = LinkedPin != nullptr
+                        ? Cast<UK2Node_Literal>(LinkedPin->GetOwningNodeUnchecked())
+                        : nullptr;
+                    if (Literal != nullptr && Literal->GetObjectRef() == SourceActor)
+                    {
+                        bTargetsSourceActor = true;
+                        break;
+                    }
+                }
+            }
+            if (!bTargetsSourceActor)
+            {
+                continue;
+            }
+
+            TSharedPtr<FJsonObject> ControlJson = MakeShared<FJsonObject>();
+            AddNodeIdentity(ControlJson.ToSharedRef(), CallNode);
+            ControlJson->SetStringField(TEXT("functionName"), FunctionName.ToString());
+            ControlJson->SetStringField(
+                TEXT("functionPath"),
+                TargetFunction->GetPathName()
+            );
+
+            UEdGraphPin* ExecIn = CallNode->FindPin(UEdGraphSchema_K2::PN_Execute);
+            TArray<TSharedPtr<FJsonValue>> Incoming;
+            if (ExecIn != nullptr)
+            {
+                for (UEdGraphPin* LinkedPin : ExecIn->LinkedTo)
+                {
+                    if (LinkedPin == nullptr || LinkedPin->GetOwningNodeUnchecked() == nullptr)
+                    {
+                        continue;
+                    }
+                    TSharedPtr<FJsonObject> LinkJson = MakeShared<FJsonObject>();
+                    AddNodeIdentity(LinkJson.ToSharedRef(), LinkedPin->GetOwningNode());
+                    LinkJson->SetStringField(TEXT("pinName"), LinkedPin->PinName.ToString());
+                    Incoming.Add(MakeShared<FJsonValueObject>(LinkJson));
+                }
+            }
+            ControlJson->SetNumberField(TEXT("incomingExecCount"), Incoming.Num());
+            ControlJson->SetArrayField(TEXT("incomingExec"), Incoming);
+
+            UEdGraphPin* ThenPin = CallNode->FindPin(UEdGraphSchema_K2::PN_Then);
+            ControlJson->SetArrayField(
+                TEXT("thenClosure"),
+                CaptureExecClosure(ThenPin)
+            );
+            Controls.Add(MakeShared<FJsonValueObject>(ControlJson));
+        }
+    }
+
+    Controls.Sort([](const TSharedPtr<FJsonValue>& Left, const TSharedPtr<FJsonValue>& Right)
+    {
+        return Left->AsObject()->GetStringField(TEXT("objectPath")) <
+            Right->AsObject()->GetStringField(TEXT("objectPath"));
+    });
+    return Controls;
+}
+
+TSharedRef<FJsonObject> CaptureLevelSequenceActorAudit(ALevelSequenceActor* SequenceActor)
+{
+    TSharedRef<FJsonObject> ActorJson = MakeShared<FJsonObject>();
+    if (SequenceActor == nullptr)
+    {
+        ActorJson->SetBoolField(TEXT("present"), false);
+        return ActorJson;
+    }
+
+    ActorJson->SetBoolField(TEXT("present"), true);
+    ActorJson->SetStringField(TEXT("actorPath"), SequenceActor->GetPathName());
+    ActorJson->SetStringField(TEXT("actorLabel"), SequenceActor->GetActorLabel());
+    ActorJson->SetStringField(TEXT("levelSequencePath"), SequenceActor->LevelSequence.ToString());
+    ActorJson->SetBoolField(TEXT("overrideInstanceData"), SequenceActor->bOverrideInstanceData != 0);
+    ActorJson->SetBoolField(TEXT("replicatePlayback"), SequenceActor->bReplicatePlayback != 0);
+
+    const FMovieSceneSequencePlaybackSettings& Settings = SequenceActor->PlaybackSettings;
+    TSharedPtr<FJsonObject> SettingsJson = MakeShared<FJsonObject>();
+    SettingsJson->SetBoolField(TEXT("autoPlay"), Settings.bAutoPlay != 0);
+    SettingsJson->SetNumberField(TEXT("loopCount"), Settings.LoopCount.Value);
+    SettingsJson->SetNumberField(TEXT("playRate"), Settings.PlayRate);
+    SettingsJson->SetNumberField(TEXT("startTime"), Settings.StartTime);
+    SettingsJson->SetBoolField(TEXT("randomStartTime"), Settings.bRandomStartTime != 0);
+    SettingsJson->SetBoolField(TEXT("restoreState"), Settings.bRestoreState != 0);
+    SettingsJson->SetBoolField(TEXT("disableMovementInput"), Settings.bDisableMovementInput != 0);
+    SettingsJson->SetBoolField(TEXT("disableLookAtInput"), Settings.bDisableLookAtInput != 0);
+    SettingsJson->SetBoolField(TEXT("hidePlayer"), Settings.bHidePlayer != 0);
+    SettingsJson->SetBoolField(TEXT("hideHud"), Settings.bHideHud != 0);
+    SettingsJson->SetBoolField(TEXT("disableCameraCuts"), Settings.bDisableCameraCuts != 0);
+    SettingsJson->SetBoolField(TEXT("pauseAtEnd"), Settings.bPauseAtEnd != 0);
+    ActorJson->SetObjectField(TEXT("playbackSettings"), SettingsJson);
+    return ActorJson;
+}
+
 bool CaptureGeneratedSequenceAudit(
     AMatineeActor* SourceActor,
+    ALevelSequenceActor* SequenceActor,
     ULevelSequence* Sequence,
     TSharedPtr<FJsonObject>& OutAudit
 )
@@ -527,6 +830,7 @@ bool CaptureGeneratedSequenceAudit(
     TSharedPtr<FJsonObject> Audit = MakeShared<FJsonObject>();
     Audit->SetStringField(TEXT("sourceActor"), SourceActor->GetPathName());
     Audit->SetStringField(TEXT("sequence"), Sequence->GetPathName());
+    Audit->SetObjectField(TEXT("levelSequenceActor"), CaptureLevelSequenceActorAudit(SequenceActor));
     Audit->SetNumberField(TEXT("sourceEventTrackCount"), SourceTracks.Num());
     Audit->SetNumberField(TEXT("targetEventTrackCount"), TargetTracks.Num());
 
@@ -763,6 +1067,81 @@ bool CaptureGeneratedSequenceAudit(
         DirectorJson->SetArrayField(TEXT("graphs"), DirectorGraphValues);
         Audit->SetObjectField(TEXT("directorBlueprint"), DirectorJson);
     }
+
+    TSharedPtr<FJsonObject> RewritePlan = MakeShared<FJsonObject>();
+    RewritePlan->SetStringField(
+        TEXT("endpointInvocationModel"),
+        TEXT("sequence_director_custom_event_only")
+    );
+    RewritePlan->SetBoolField(TEXT("endpointsInvokeLevelBlueprintDirectly"), false);
+    RewritePlan->SetStringField(
+        TEXT("engineBasis"),
+        TEXT("UE 4.27 CopyInterpEventTrack creates empty MatineeEvent endpoints in the Sequence Director; MovieSceneEventUtils binds those endpoints only inside the director blueprint.")
+    );
+    RewritePlan->SetArrayField(TEXT("playbackControlCalls"), CapturePlaybackControlCalls(SourceActor));
+
+    UEdGraph* ControllerGraph = nullptr;
+    UK2Node_MatineeController* Controller = FindMatineeControllerNode(SourceActor, ControllerGraph);
+    TArray<TSharedPtr<FJsonValue>> EventPlans;
+    if (Controller == nullptr)
+    {
+        UE_LOG(
+            LogZenMatineeBridge,
+            Error,
+            TEXT("ZEN_BRIDGE_ERROR matinee_controller_missing actor=%s"),
+            *SourceActor->GetActorLabel()
+        );
+        return false;
+    }
+
+    RewritePlan->SetStringField(TEXT("controllerObjectPath"), Controller->GetPathName());
+    RewritePlan->SetStringField(
+        TEXT("controllerGraphPath"),
+        ControllerGraph != nullptr ? ControllerGraph->GetPathName() : FString()
+    );
+
+    for (const TSharedPtr<FJsonValue>& TrackValue : EventTrackValues)
+    {
+        const TSharedPtr<FJsonObject> TrackJson = TrackValue->AsObject();
+        const TArray<TSharedPtr<FJsonValue>>* KeyValues = nullptr;
+        if (!TrackJson->TryGetArrayField(TEXT("keys"), KeyValues) || KeyValues == nullptr)
+        {
+            continue;
+        }
+        for (const TSharedPtr<FJsonValue>& KeyValue : *KeyValues)
+        {
+            const TSharedPtr<FJsonObject> KeyJson = KeyValue->AsObject();
+            const FString SourceEventName = KeyJson->GetStringField(TEXT("sourceEventName"));
+            UEdGraphPin* EventPin = Controller->FindPin(FName(*SourceEventName));
+            if (EventPin == nullptr)
+            {
+                UE_LOG(
+                    LogZenMatineeBridge,
+                    Error,
+                    TEXT("ZEN_BRIDGE_ERROR controller_event_pin_missing actor=%s event=%s"),
+                    *SourceActor->GetActorLabel(),
+                    *SourceEventName
+                );
+                return false;
+            }
+
+            TSharedPtr<FJsonObject> PlanJson = MakeShared<FJsonObject>();
+            PlanJson->SetNumberField(TEXT("keyIndex"), KeyJson->GetNumberField(TEXT("keyIndex")));
+            PlanJson->SetStringField(TEXT("sourceEventName"), SourceEventName);
+            PlanJson->SetStringField(
+                TEXT("endpointObjectPath"),
+                KeyJson->GetStringField(TEXT("endpointObjectPath"))
+            );
+            PlanJson->SetNumberField(TEXT("frameNumber"), KeyJson->GetNumberField(TEXT("frameNumber")));
+            PlanJson->SetStringField(TEXT("controllerPinName"), EventPin->PinName.ToString());
+            PlanJson->SetNumberField(TEXT("controllerPinLinkCount"), EventPin->LinkedTo.Num());
+            PlanJson->SetArrayField(TEXT("execClosure"), CaptureExecClosure(EventPin));
+            EventPlans.Add(MakeShared<FJsonValueObject>(PlanJson));
+        }
+    }
+    RewritePlan->SetNumberField(TEXT("eventPlanCount"), EventPlans.Num());
+    RewritePlan->SetArrayField(TEXT("eventPlans"), EventPlans);
+    Audit->SetObjectField(TEXT("eventRewritePlan"), RewritePlan);
 
     Audit->SetBoolField(TEXT("mappingVerified"), true);
     OutAudit = Audit;
@@ -1229,7 +1608,7 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
         }
 
         TSharedPtr<FJsonObject> SequenceAudit;
-        if (!CaptureGeneratedSequenceAudit(Actor, Sequence, SequenceAudit))
+        if (!CaptureGeneratedSequenceAudit(Actor, NewActor.Get(), Sequence, SequenceAudit))
         {
             return 30;
         }
