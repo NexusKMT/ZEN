@@ -912,16 +912,10 @@ jobs:
               ddc_dir=/tmp/ue-ddc
               mkdir -p "$runtime_dir" "$ddc_dir"
               chmod 0700 "$runtime_dir"
+              # Hyphenated UE env vars are not valid bash identifiers; pass via env(1).
               export XDG_RUNTIME_DIR="$runtime_dir"
-              export UE-LocalDataCachePath="$ddc_dir"
 
-              /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor \
-                "$probe_root/EpicZenGarden.uproject" \
-                /Game/Maps/Zen_Movie \
-                -unattended -NullRHI -NoSound -NoSplash -NoP4 \
-                -stdout -FullStdOutLogOutput -UTF8Output \
-                -ABSLOG=/tmp/ue55-zen-movie-abslog.log \
-                -ExecCmds=Quit
+              env                 "UE-LocalDataCachePath=$ddc_dir"                 /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor                 "$probe_root/EpicZenGarden.uproject"                 /Game/Maps/Zen_Movie                 -unattended -NullRHI -NoSound -NoSplash -NoP4                 -stdout -FullStdOutLogOutput -UTF8Output                 -ABSLOG=/tmp/ue55-zen-movie-abslog.log                 -ExecCmds=Quit
             ' > "$probe_log" 2>&1
           probe_status="$?"
           set -e
