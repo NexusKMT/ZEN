@@ -3422,8 +3422,8 @@ int32 UZenMatineeBridgeCommandlet::Main(const FString& Params)
     FParse::Value(*Params, TEXT("TargetMap="), TargetMap);
     FParse::Value(*Params, TEXT("ExpectedActor="), ExpectedActor);
     FParse::Value(*Params, TEXT("ExpectedMatinees="), ExpectedMatinees);
-    FParse::Value(*Params, TEXT("RequiredSourceTracks="), RequiredSourceTrackList);
-    FParse::Value(*Params, TEXT("RequiredSequenceTracks="), RequiredSequenceTrackList);
+    FParse::Value(*Params, TEXT("RequiredSourceTracks="), RequiredSourceTrackList, false);
+    FParse::Value(*Params, TEXT("RequiredSequenceTracks="), RequiredSequenceTrackList, false);
     FParse::Value(*Params, TEXT("ReportName="), ReportName);
 
     TArray<FString> RequiredSourceTracks;
