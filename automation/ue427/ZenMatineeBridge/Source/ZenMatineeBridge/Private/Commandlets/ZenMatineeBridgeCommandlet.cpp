@@ -1138,15 +1138,21 @@ bool ApplyDirectorEventRewrite(
 
     UEdGraph* ControllerGraph = nullptr;
     UK2Node_MatineeController* Controller = FindMatineeControllerNode(SourceActor, ControllerGraph);
-    if (Controller == nullptr)
+    if (Controller == nullptr || ControllerGraph == nullptr)
     {
         UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_controller_missing"));
         return false;
     }
 
+    ULevelScriptBlueprint* LevelBlueprint = Cast<ULevelScriptBlueprint>(
+        SourceActor->GetLevel() != nullptr ? SourceActor->GetLevel()->GetLevelScriptBlueprint(true) : nullptr);
     ALevelScriptActor* LevelScriptActor = SourceActor->GetLevel() != nullptr
-        ? SourceActor->GetLevel()->GetLevelScriptActor()
-        : nullptr;
+        ? SourceActor->GetLevel()->GetLevelScriptActor() : nullptr;
+    if (LevelBlueprint == nullptr || LevelScriptActor == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_level_script_missing"));
+        return false;
+    }
 
     UEdGraph* SequencerEventsGraph = nullptr;
     for (UEdGraph* Graph : DirectorBlueprint->UbergraphPages)
@@ -1186,11 +1192,37 @@ bool ApplyDirectorEventRewrite(
     const TArrayView<const FMovieSceneEvent> Events = ChannelData.GetValues();
     if (Events.Num() != SourceTracks[0].Track->EventTrack.Num()) { return false; }
 
+    const UEdGraphSchema_K2* Schema = GetDefault<UEdGraphSchema_K2>();
+    UFunction* RemoteEventFunction = ALevelScriptActor::StaticClass()->FindFunctionByName(
+        GET_FUNCTION_NAME_CHECKED(ALevelScriptActor, RemoteEvent));
+    if (RemoteEventFunction == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR remote_event_function_missing"));
+        return false;
+    }
+
     DirectorBlueprint->Modify();
     SequencerEventsGraph->Modify();
+    LevelBlueprint->Modify();
+    ControllerGraph->Modify();
+
+    UK2Node_Literal* LsaLiteral = NewObject<UK2Node_Literal>(SequencerEventsGraph);
+    SequencerEventsGraph->AddNode(LsaLiteral, false, false);
+    LsaLiteral->CreateNewGuid();
+    LsaLiteral->PostPlacedNewNode();
+    LsaLiteral->SetObjectRef(LevelScriptActor);
+    LsaLiteral->AllocateDefaultPins();
+    LsaLiteral->NodePosX = -300;
+    LsaLiteral->NodePosY = 0;
+    UEdGraphPin* LsaLiteralOut = LsaLiteral->Pins.Num() > 0 ? LsaLiteral->Pins[0] : nullptr;
+    if (LsaLiteralOut == nullptr)
+    {
+        UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR lsa_literal_pin_missing"));
+        return false;
+    }
 
     TArray<TSharedPtr<FJsonValue>> WiredEvents;
-    int32 TotalCloned = 0;
+    int32 TotalCloned = 1; // shared LSA literal
     for (int32 KeyIndex = 0; KeyIndex < Events.Num(); ++KeyIndex)
     {
         const FEventTrackKey& SourceKey = SourceTracks[0].Track->EventTrack[KeyIndex];
@@ -1201,32 +1233,137 @@ bool ApplyDirectorEventRewrite(
             UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR rewrite_endpoint_or_pin_missing event=%s"), *SourceKey.EventName.ToString());
             return false;
         }
-        int32 ClonedCount = 0;
-        if (!CloneExecClosureToEndpoint(ControllerPin, Endpoint, SequencerEventsGraph, LevelScriptActor, ClonedCount))
+        if (ControllerPin->LinkedTo.Num() == 0)
         {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR controller_pin_has_no_links pin=%s"), *ControllerPin->PinName.ToString());
             return false;
         }
-        TotalCloned += ClonedCount;
+
+        const FName SeqEventName(*FString::Printf(TEXT("ZenSeq_%s"), *SourceKey.EventName.ToString()));
+
+        UK2Node_CustomEvent* LevelSeqEvent = nullptr;
+        for (UEdGraphNode* Node : ControllerGraph->Nodes)
+        {
+            if (UK2Node_CustomEvent* Existing = Cast<UK2Node_CustomEvent>(Node))
+            {
+                if (Existing->CustomFunctionName == SeqEventName)
+                {
+                    LevelSeqEvent = Existing;
+                    break;
+                }
+            }
+        }
+        if (LevelSeqEvent == nullptr)
+        {
+            LevelSeqEvent = NewObject<UK2Node_CustomEvent>(ControllerGraph);
+            ControllerGraph->AddNode(LevelSeqEvent, false, false);
+            LevelSeqEvent->CreateNewGuid();
+            LevelSeqEvent->PostPlacedNewNode();
+            LevelSeqEvent->bIsEditable = true;
+            LevelSeqEvent->CustomFunctionName = SeqEventName;
+            LevelSeqEvent->AllocateDefaultPins();
+            LevelSeqEvent->NodePosX = Controller->NodePosX - 250;
+            LevelSeqEvent->NodePosY = Controller->NodePosY + (KeyIndex * 80);
+            ++TotalCloned;
+        }
+
+        UEdGraphPin* LevelThen = FindPinByName(LevelSeqEvent, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+        if (LevelThen == nullptr)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR level_seq_event_then_missing name=%s"), *SeqEventName.ToString());
+            return false;
+        }
+        for (UEdGraphPin* FirstHopInput : ControllerPin->LinkedTo)
+        {
+            if (FirstHopInput == nullptr) { continue; }
+            bool bAlreadyLinked = false;
+            for (UEdGraphPin* ExistingLink : LevelThen->LinkedTo)
+            {
+                if (ExistingLink == FirstHopInput) { bAlreadyLinked = true; break; }
+            }
+            if (!bAlreadyLinked)
+            {
+                if (!Schema->TryCreateConnection(LevelThen, FirstHopInput))
+                {
+                    LevelThen->MakeLinkTo(FirstHopInput);
+                }
+            }
+        }
+        if (LevelThen->LinkedTo.Num() == 0)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR level_seq_event_not_joined name=%s"), *SeqEventName.ToString());
+            return false;
+        }
+
+        UEdGraphPin* EndpointThen = FindPinByName(Endpoint, UEdGraphSchema_K2::PN_Then, EGPD_Output);
+        if (EndpointThen == nullptr)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR endpoint_then_missing path=%s"), *Endpoint->GetPathName());
+            return false;
+        }
+        if (EndpointThen->LinkedTo.Num() == 0)
+        {
+            UK2Node_CallFunction* RemoteCall = NewObject<UK2Node_CallFunction>(SequencerEventsGraph);
+            SequencerEventsGraph->AddNode(RemoteCall, false, false);
+            RemoteCall->CreateNewGuid();
+            RemoteCall->PostPlacedNewNode();
+            RemoteCall->FunctionReference.SetExternalMember(
+                RemoteEventFunction->GetFName(),
+                ALevelScriptActor::StaticClass());
+            RemoteCall->AllocateDefaultPins();
+            RemoteCall->NodePosX = Endpoint->NodePosX + 300;
+            RemoteCall->NodePosY = Endpoint->NodePosY;
+            ++TotalCloned;
+
+            UEdGraphPin* RemoteExec = FindExecPinForRewrite(RemoteCall, EGPD_Input);
+            UEdGraphPin* RemoteSelf = RemoteCall->FindPin(UEdGraphSchema_K2::PN_Self);
+            UEdGraphPin* EventNamePin = RemoteCall->FindPin(TEXT("EventName"), EGPD_Input);
+            if (RemoteExec == nullptr || RemoteSelf == nullptr || EventNamePin == nullptr)
+            {
+                FString PinNames;
+                for (const UEdGraphPin* Pin : RemoteCall->Pins)
+                {
+                    if (Pin != nullptr) { PinNames += Pin->PinName.ToString() + TEXT(";"); }
+                }
+                UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR remote_event_pins_missing pins=%s"), *PinNames);
+                return false;
+            }
+
+            EventNamePin->DefaultValue = SeqEventName.ToString();
+            if (!Schema->TryCreateConnection(EndpointThen, RemoteExec)) { EndpointThen->MakeLinkTo(RemoteExec); }
+            if (!Schema->TryCreateConnection(LsaLiteralOut, RemoteSelf)) { LsaLiteralOut->MakeLinkTo(RemoteSelf); }
+        }
+
+        if (EndpointThen->LinkedTo.Num() == 0)
+        {
+            UE_LOG(LogZenMatineeBridge, Error, TEXT("ZEN_BRIDGE_ERROR endpoint_not_wired path=%s"), *Endpoint->GetPathName());
+            return false;
+        }
+
         TSharedPtr<FJsonObject> Wired = MakeShared<FJsonObject>();
         Wired->SetNumberField(TEXT("keyIndex"), KeyIndex);
         Wired->SetStringField(TEXT("sourceEventName"), SourceKey.EventName.ToString());
         Wired->SetStringField(TEXT("endpointObjectPath"), Endpoint->GetPathName());
-        Wired->SetNumberField(TEXT("clonedNodeCount"), ClonedCount);
-        UEdGraphPin* ThenPin = FindPinByName(Endpoint, UEdGraphSchema_K2::PN_Then, EGPD_Output);
-        Wired->SetNumberField(TEXT("thenLinkCount"), ThenPin != nullptr ? ThenPin->LinkedTo.Num() : 0);
+        Wired->SetStringField(TEXT("levelCustomEventName"), SeqEventName.ToString());
+        Wired->SetNumberField(TEXT("clonedNodeCount"), 2);
+        Wired->SetNumberField(TEXT("thenLinkCount"), EndpointThen->LinkedTo.Num());
         WiredEvents.Add(MakeShared<FJsonValueObject>(Wired));
     }
 
+    FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(LevelBlueprint);
+    FKismetEditorUtilities::CompileBlueprint(LevelBlueprint);
     FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(DirectorBlueprint);
     FKismetEditorUtilities::CompileBlueprint(DirectorBlueprint);
 
     OutRewriteResult->SetBoolField(TEXT("applied"), true);
+    OutRewriteResult->SetStringField(TEXT("strategy"), TEXT("level_custom_event_dual_entry_plus_director_remote_event"));
     OutRewriteResult->SetNumberField(TEXT("wiredEventCount"), WiredEvents.Num());
     OutRewriteResult->SetNumberField(TEXT("clonedNodeCount"), TotalCloned);
     OutRewriteResult->SetArrayField(TEXT("wiredEvents"), WiredEvents);
-    UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_EVENT_REWRITE wired=%d cloned=%d"), WiredEvents.Num(), TotalCloned);
+    UE_LOG(LogZenMatineeBridge, Display, TEXT("ZEN_BRIDGE_EVENT_REWRITE wired=%d cloned=%d strategy=dual_entry"), WiredEvents.Num(), TotalCloned);
     return true;
 }
+
 
 void CopyMatineePlaybackSettingsToSequenceActor(AMatineeActor* SourceActor, ALevelSequenceActor* SequenceActor)
 {
@@ -1326,20 +1463,22 @@ bool ApplyPlaybackControlRewrite(
             Graph->AddNode(SeqLiteral, false, false);
 
             UK2Node_CallFunction* GetPlayerCall = NewObject<UK2Node_CallFunction>(Graph);
+            Graph->AddNode(GetPlayerCall, false, false);
             GetPlayerCall->CreateNewGuid();
             GetPlayerCall->PostPlacedNewNode();
-            GetPlayerCall->SetFromFunction(GetPlayerFunction);
+            GetPlayerCall->FunctionReference.SetExternalMember(GetPlayerFunction->GetFName(), ALevelSequenceActor::StaticClass());
+            GetPlayerCall->AllocateDefaultPins();
             GetPlayerCall->NodePosX = PlayCall->NodePosX - 150;
             GetPlayerCall->NodePosY = PlayCall->NodePosY + 80;
-            Graph->AddNode(GetPlayerCall, false, false);
 
             UK2Node_CallFunction* SeqPlayCall = NewObject<UK2Node_CallFunction>(Graph);
+            Graph->AddNode(SeqPlayCall, false, false);
             SeqPlayCall->CreateNewGuid();
             SeqPlayCall->PostPlacedNewNode();
-            SeqPlayCall->SetFromFunction(PlayFunction);
+            SeqPlayCall->FunctionReference.SetExternalMember(PlayFunction->GetFName(), ULevelSequencePlayer::StaticClass());
+            SeqPlayCall->AllocateDefaultPins();
             SeqPlayCall->NodePosX = PlayCall->NodePosX;
             SeqPlayCall->NodePosY = PlayCall->NodePosY + 80;
-            Graph->AddNode(SeqPlayCall, false, false);
 
             UEdGraphPin* LiteralOut = SeqLiteral->Pins.Num() > 0 ? SeqLiteral->Pins[0] : nullptr;
             UEdGraphPin* GetPlayerSelf = GetPlayerCall->FindPin(UEdGraphSchema_K2::PN_Self);

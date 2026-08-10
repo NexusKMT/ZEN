@@ -56,8 +56,8 @@ plus every Level Blueprint Play/Pause/Stop/SetPosition call that still targets
 the legacy Matinee actor. It also records the generated `ALevelSequenceActor`
 path and playback settings so play-control rewrites have a concrete target.
 After the plan is captured, the bridge rewrites graphs in-place: each Director
-endpoint receives a clone of the MatineeController execution closure (with
-LevelScriptActor self pins rebound for RemoteEvent), and Level Blueprint
+endpoint calls RemoteEvent into a new Level Blueprint ZenSeq_* custom event
+that joins the existing MatineeController execution chain, and Level Blueprint
 Play calls that targeted the legacy Matinee actor are retargeted through the
 generated LevelSequenceActor player. Playback settings such as force-start
 time are copied onto the LevelSequenceActor. The legacy Matinee actor and
