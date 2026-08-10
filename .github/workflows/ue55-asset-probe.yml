@@ -9,7 +9,7 @@ on:
         type: boolean
         default: false
       run_ue_container:
-        description: Probe UE 5.5.4 against the completed UE 4.27 bridge output
+        description: Load /Game/Maps/Zen_Movie in UE 5.5.4 against the completed UE 4.27 bridge output
         required: true
         type: boolean
         default: false
@@ -870,76 +870,141 @@ jobs:
         run: |
           set -euo pipefail
 
-          version_log="$RUNNER_TEMP/ue-version.log"
+          probe_log="$RUNNER_TEMP/ue55-map-probe.log"
           set +e
-          timeout 120s docker run --rm \
+          # Full project + map load is much heavier than a bare engine boot.
+          # Keep the licensed bridge output read-only and open a writable probe
+          # root that symlinks Content back at the converted assets.
+          timeout 900s docker run --rm \
             --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
             "$UE55_IMAGE" \
             bash -lc '
               set -euo pipefail
-              test -r /workspace/EpicZenGarden/EpicZenGarden.uproject
+              ro_root=/workspace/EpicZenGarden
+              test -r "$ro_root/EpicZenGarden.uproject"
               echo "Verified that the project descriptor is readable."
-              test -d /workspace/EpicZenGarden/Content
+              test -d "$ro_root/Content"
               echo "Verified that the project Content directory exists."
-              if touch /workspace/EpicZenGarden/.write-probe 2>/dev/null; then
+              test -f "$ro_root/Content/Maps/Zen_Movie.umap"
+              echo "Verified that Content/Maps/Zen_Movie.umap exists on the bridge output."
+              if touch "$ro_root/.write-probe" 2>/dev/null; then
                 echo "Project mount unexpectedly accepted a write." >&2
                 exit 1
               fi
               echo "Verified that the read-only project mount rejected a write."
 
+              probe_root=/tmp/EpicZenGarden-ue55-probe
+              rm -rf "$probe_root"
+              mkdir -p "$probe_root"
+              cp "$ro_root/EpicZenGarden.uproject" "$probe_root/"
+              if [[ -d "$ro_root/Config" ]]; then
+                cp -a "$ro_root/Config" "$probe_root/"
+              fi
+              ln -s "$ro_root/Content" "$probe_root/Content"
+              for extra in Plugins Binaries Source Build; do
+                if [[ -e "$ro_root/$extra" ]]; then
+                  ln -s "$ro_root/$extra" "$probe_root/$extra"
+                fi
+              done
+              echo "Prepared writable UE 5.5.4 probe root with read-only Content symlink."
+
               runtime_dir=/tmp/ue-runtime
-              mkdir -p "$runtime_dir"
+              ddc_dir=/tmp/ue-ddc
+              mkdir -p "$runtime_dir" "$ddc_dir"
               chmod 0700 "$runtime_dir"
               export XDG_RUNTIME_DIR="$runtime_dir"
+              export UE-LocalDataCachePath="$ddc_dir"
 
               /home/ue4/UnrealEngine/Engine/Binaries/Linux/UnrealEditor \
+                "$probe_root/EpicZenGarden.uproject" \
+                /Game/Maps/Zen_Movie \
                 -unattended -NullRHI -NoSound -NoSplash -NoP4 \
-                -ExecCmds=Quit -Seconds=60 \
-                -stdout -FullStdOutLogOutput -UTF8Output
-            ' > "$version_log" 2>&1
+                -stdout -FullStdOutLogOutput -UTF8Output \
+                -ABSLOG=/tmp/ue55-zen-movie-abslog.log \
+                -ExecCmds=Quit
+            ' > "$probe_log" 2>&1
           probe_status="$?"
           set -e
 
-          cat "$version_log"
+          cat "$probe_log"
           echo "UE 5.5.4 probe process status: $probe_status"
 
           if [[ "$probe_status" = 124 ]]; then
-            echo '::error::The UE 5.5.4 container probe timed out.'
+            echo '::error::The UE 5.5.4 Zen_Movie map probe timed out.'
             exit 1
           fi
           if [[ "$probe_status" != 0 ]]; then
-            echo '::error::The UE 5.5.4 container probe failed.'
+            echo '::error::The UE 5.5.4 Zen_Movie map probe failed.'
             exit "$probe_status"
           fi
 
           required_probe_lines=(
             'Verified that the project descriptor is readable.'
             'Verified that the project Content directory exists.'
+            'Verified that Content/Maps/Zen_Movie.umap exists on the bridge output.'
             'Verified that the read-only project mount rejected a write.'
+            'Prepared writable UE 5.5.4 probe root with read-only Content symlink.'
             'LogInit: Engine Version: 5.5.4-37670630+UE5'
             "LogInit:  - we're running without rendering"
             'LogExit: Exiting.'
           )
           for required_line in "${required_probe_lines[@]}"; do
-            if ! grep -Fq -- "$required_line" "$version_log"; then
+            if ! grep -Fq -- "$required_line" "$probe_log"; then
               echo "::error::The UE 5.5.4 probe log is missing required success evidence: ${required_line}"
               exit 1
             fi
           done
 
+          required_probe_regexes=(
+            'Running engine for game: EpicZenGarden'
+            '/Game/Maps/Zen_Movie'
+            'Zen_Movie'
+          )
+          for required_regex in "${required_probe_regexes[@]}"; do
+            if ! grep -Eq -- "$required_regex" "$probe_log"; then
+              echo "::error::The UE 5.5.4 probe log is missing required load evidence matching: ${required_regex}"
+              exit 1
+            fi
+          done
+
+          # Prefer strong LoadMap evidence when present; fall back to package path hits.
+          if ! grep -Eq 'LoadMap:.*Zen_Movie|Loading map.*Zen_Movie|LogLoad:.*Zen_Movie' "$probe_log"; then
+            if ! grep -Eq 'LogPackageName:.*Zen_Movie|LogEditorLoad:.*Zen_Movie|LogWorld:.*Zen_Movie' "$probe_log"; then
+              echo '::error::The UE 5.5.4 probe log does not show Zen_Movie map/package load evidence.'
+              exit 1
+            fi
+          fi
+
+          if ! grep -Eq 'MatineeActor_MovieLevelSequence|SequenceDirector|MovieSceneEventTrack|LevelSequence' "$probe_log"; then
+            echo '::warning::Converted Sequencer asset names were not mentioned in the UE 5.5.4 probe log; map load evidence still passed.'
+          fi
+
           if grep -Eiq \
             'XDG_RUNTIME_DIR not set|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault' \
-            "$version_log"
+            "$probe_log"
           then
             echo '::error::The UE 5.5.4 probe log contains an environment, abnormal-exit, or fatal marker.'
             exit 1
           fi
 
-          echo 'UE 5.5.4 started successfully and the Zen Garden project mount remained read-only.'
+          echo 'UE 5.5.4 opened the bridge output and loaded /Game/Maps/Zen_Movie with the project Content remaining read-only.'
 
           {
             echo
             echo '## UE container probe'
             echo
-            printf 'Validated `%s` against the UE 4.27 bridge output mounted read-only.\n' "$UE55_IMAGE"
+            printf 'Validated `%s` by loading `/Game/Maps/Zen_Movie` from the UE 4.27 bridge output.\n' "$UE55_IMAGE"
+            echo
+            echo '- Bridge project mount: read-only'
+            echo '- Probe project root: writable shell with Content symlink'
+            echo '- Map: `/Game/Maps/Zen_Movie`'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the UE 5.5.4 map probe log
+        if: ${{ always() && inputs.run_ue_container }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ue55-map-probe-log
+          path: ${{ runner.temp }}/ue55-map-probe.log
+          if-no-files-found: warn
+          retention-days: 7
