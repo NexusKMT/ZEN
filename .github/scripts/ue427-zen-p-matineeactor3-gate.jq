@@ -233,11 +233,11 @@ end) and
   ] and
   ([.sourceEventTracks[].keys[].eventName] | sort) == target_events and
   .sourceEventTracks[0].keys == [
-    {"keyIndex": 0, "timeSeconds": 8.253929138183594, "eventName": "StopButterflies"},
+    {"keyIndex": 0, "timeSeconds": 8.2539291381835938, "eventName": "StopButterflies"},
     {"keyIndex": 1, "timeSeconds": 242.14059448242188, "eventName": "End"}
   ] and
   .sourceEventTracks[1].keys == [
-    {"keyIndex": 0, "timeSeconds": 4.559261798858643, "eventName": "SwitchLevel"}
+    {"keyIndex": 0, "timeSeconds": 4.5592617988586426, "eventName": "SwitchLevel"}
   ] and
   ([.referenceContexts[].referencers[] |
     select(.class == "K2Node_Literal") |
@@ -444,7 +444,7 @@ end) and
       .sequencePlayerControlCounts == {"Pause": 2, "Play": 1} and
       .validSequencePlaybackControlCounts == {"Pause": 2, "Play": 1} and
       (.playbackControlChains | length) == 3 and
-      ([.playbackControlChains[].incomingExecCount] | sort) == [1, 1, 2] and
+      ([.playbackControlChains[].incomingExecCount] | sort) == [1, 1, 1] and
       all(.playbackControlChains[]; valid_control_chain($audit)) and
       .remainingWorldActorCount == 0 and
       .remainingMapMatineeActorCount == 0 and
