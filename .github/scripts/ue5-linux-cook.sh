@@ -23,11 +23,15 @@ if [[ -d "$readonly_root/Config" ]]; then
   cp -a "$readonly_root/Config" "$cook_root/"
 fi
 ln -s "$readonly_root/Content" "$cook_root/Content"
-for extra in Plugins Binaries Source Build; do
+for extra in Plugins Binaries Source; do
   if [[ -e "$readonly_root/$extra" ]]; then
     ln -s "$readonly_root/$extra" "$cook_root/$extra"
   fi
 done
+if [[ -d "$readonly_root/Build" ]]; then
+  cp -a "$readonly_root/Build" "$cook_root/Build"
+  chmod -R a+rwX "$cook_root/Build"
+fi
 
 runtime_dir="$output_root/ue5-cook-runtime"
 ddc_dir="$output_root/ue5-cook-ddc"

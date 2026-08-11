@@ -155,9 +155,11 @@ The opt-in cook stage follows
 and targets Linux with both converted maps. It requires the three generated
 Level Sequences to appear in the cooked output and rejects Blueprint, Matinee
 `CreateExport`, package, linker, asset-registry, material, texture, audio,
-streaming, Level Sequence, and cooker errors or warnings. Cooked licensed
-content remains runner-local; GitHub receives only the text cook log and a
-sorted cooked-file manifest.
+streaming, Level Sequence, and any other UE category errors or warnings. The
+only allowed diagnostic is Epic's fixed three-shader-worker performance notice
+from the constrained GitHub runner. Cooked licensed content remains
+runner-local; GitHub receives only the text cook log and a sorted cooked-file
+manifest.
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.

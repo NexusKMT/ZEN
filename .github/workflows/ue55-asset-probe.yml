@@ -1687,14 +1687,15 @@ jobs:
             fi
           done
 
-          if grep -Eq \
-            'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):|LoadErrors: (Error|Warning): CreateExport:|LogCook: (Error|Warning):|LogPackageName: (Error|Warning):|LogLinker: (Error|Warning):|LogAssetRegistry: (Error|Warning):|LogMaterial: (Error|Warning):|LogTexture: (Error|Warning):|LogAudio: (Error|Warning):|LogStreaming: (Error|Warning):|LogLevelSequence[^:]*: (Error|Warning):' \
-            "$cook_log"
-          then
-            echo "::error::The UE ${UE5_VERSION} cook emitted an asset, Blueprint, package, or cooker error/warning."
-            grep -E \
-              'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):|LoadErrors: (Error|Warning): CreateExport:|LogCook: (Error|Warning):|LogPackageName: (Error|Warning):|LogLinker: (Error|Warning):|LogAssetRegistry: (Error|Warning):|LogMaterial: (Error|Warning):|LogTexture: (Error|Warning):|LogAudio: (Error|Warning):|LogStreaming: (Error|Warning):|LogLevelSequence[^:]*: (Error|Warning):' \
-              "$cook_log" || true
+          # The runner's three shader workers emit one fixed performance
+          # warning. Every other UE category diagnostic is a cook failure.
+          allowed_engine_warning='LogShaderCompilers: Warning: Only 3 SCWs will be spawned, which will result in longer shader compile times.'
+          unexpected_engine_diagnostics="$(grep -E \
+            '(^|])([A-Za-z][A-Za-z0-9_]+): (Error|Warning):|LogInit: Display: ([A-Za-z][A-Za-z0-9_]+): (Error|Warning):' \
+            "$cook_log" | grep -Fv -- "$allowed_engine_warning" || true)"
+          if [[ -n "$unexpected_engine_diagnostics" ]]; then
+            echo "::error::The UE ${UE5_VERSION} cook emitted an unexpected engine error/warning."
+            printf '%s\n' "$unexpected_engine_diagnostics"
             exit 1
           fi
 
@@ -1725,7 +1726,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload the UE 5 Linux cook audit
-        if: ${{ always() && inputs.run_ue5_cook }}
+        if: ${{ always() && inputs.run_ue5_cook && inputs.run_ue427_bridge && inputs.remove_source_matinee && inputs.run_ue_container }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ue5-linux-cook-audit
