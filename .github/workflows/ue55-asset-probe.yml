@@ -1327,7 +1327,7 @@ jobs:
 
       - name: Upload the UE 4.27 migration audit
         if: ${{ always() && inputs.run_ue427_bridge }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue427-migration-audit
           path: ${{ runner.temp }}/ue427-bridge/${{ env.PROJECT_ROOT_NAME }}/Saved/ZenMigration/*.json
@@ -1336,7 +1336,7 @@ jobs:
 
       - name: Upload the UE 4.27 migration logs
         if: ${{ always() && inputs.run_ue427_bridge }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue427-migration-logs
           path: ${{ runner.temp }}/ue427-logs/*.log
@@ -1640,7 +1640,7 @@ jobs:
 
       - name: Upload the selected UE 5 map probe log
         if: ${{ always() && inputs.run_ue_container }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue5-map-probe-log
           path: ${{ runner.temp }}/ue5-map-probe.log
@@ -1739,7 +1739,7 @@ jobs:
 
       - name: Upload the UE 5 Linux cook audit
         if: ${{ always() && inputs.run_ue5_cook && inputs.run_ue427_bridge && inputs.remove_source_matinee && inputs.run_ue_container }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue5-linux-cook-audit
           path: |
@@ -1825,7 +1825,7 @@ jobs:
 
       - name: Upload the UE 5 Linux stage and runtime audit
         if: ${{ always() && inputs.run_ue5_stage && inputs.run_ue427_bridge && inputs.remove_source_matinee && inputs.run_ue_container && inputs.run_ue5_cook }}
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue5-linux-stage-runtime-audit
           path: |
