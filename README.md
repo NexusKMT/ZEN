@@ -46,7 +46,12 @@ this public repository. It:
    read-only;
 8. optionally runs Epic's command-line Cook flow for Linux against those two
    maps, proves all three generated Level Sequences reached the cooked output,
-   and uploads only its text log and sorted file manifest.
+   and uploads only its text log and sorted file manifest;
+9. optionally uses Unreal Automation Tool to build, cook, stage, package, and
+   archive a Linux Development build, rejects loose source asset packages,
+   verifies the staged launcher, Pak payload, and Linux binaries, then
+   headlessly launches both maps from the staged package and enumerates all
+   three generated Level Sequences at runtime.
 
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
@@ -76,7 +81,8 @@ unless `run_ue427_bridge=true`, so the selected UE 5 runtime cannot be pointed
 at the original UE 4.23 input by this workflow. The `ue5_version` choice is
 restricted to `5.4.4` and the previously validated `5.5.4`; `5.4.4` is the
 default target. `run_ue5_cook=true` additionally requires source cleanup and a
-strict UE 5 load probe in the same run.
+strict UE 5 load probe in the same run. `run_ue5_stage=true` additionally
+requires that strict Linux Cook in the same run.
 
 ### Required repository secrets
 
@@ -160,6 +166,31 @@ only allowed diagnostic is Epic's fixed three-shader-worker performance notice
 from the constrained GitHub runner. Cooked licensed content remains
 runner-local; GitHub receives only the text cook log and a sorted cooked-file
 manifest.
+
+After the strict Cook has passed, enable the Linux distribution gate with:
+
+```bash
+gh workflow run ue55-asset-probe.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field run_ue427_bridge=true \
+  --field remove_source_matinee=true \
+  --field run_ue_container=true \
+  --field run_ue5_cook=true \
+  --field run_ue5_stage=true \
+  --field ue5_version=5.4.4
+```
+
+The stage/runtime gate follows Epic's documented Linux `BuildCookRun` path and
+uses `-build -cook -stage -package -pak -archive` with a runner-local archive
+directory. It refuses a missing launcher, missing Linux binary or Pak payload,
+or loose `.umap`/`.uasset` source packages in the distributable output. It
+then starts `Zen_Movie` and `Zen_P` from that staged launcher using NullRHI,
+no sound, and `-ExecCmds="obj list class=LevelSequence,quit"`. Each launch
+must cleanly exit after loading its requested map with no UE error or warning;
+the combined logs must enumerate every converted Level Sequence. The staged
+package itself, executable, and licensed data remain runner-local. The uploaded
+audit is limited to the UAT/runtime text logs and sorted staged file manifest.
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
