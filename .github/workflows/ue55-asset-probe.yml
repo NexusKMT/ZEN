@@ -18,6 +18,11 @@ on:
         required: true
         type: boolean
         default: false
+      run_ue5_cook:
+        description: Cook both converted maps and their dependencies for Linux after the strict UE 5 load probe
+        required: true
+        type: boolean
+        default: false
       ue5_version:
         description: Exact Epic UE 5 development-container patch version to validate
         required: true
@@ -70,6 +75,13 @@ jobs:
         shell: bash
         run: |
           echo '::error::Source Matinee cleanup requires run_ue427_bridge=true and cannot modify the original UE 4.23 input.'
+          exit 1
+
+      - name: Enforce the UE 5 cook order
+        if: ${{ inputs.run_ue5_cook && (!inputs.run_ue427_bridge || !inputs.remove_source_matinee || !inputs.run_ue_container) }}
+        shell: bash
+        run: |
+          echo '::error::UE 5 cooking requires the UE 4.27 bridge, audited source Matinee cleanup, and the strict UE 5 load probe.'
           exit 1
 
       - name: Report initial runner capacity
@@ -1620,5 +1632,105 @@ jobs:
         with:
           name: ue5-map-probe-log
           path: ${{ runner.temp }}/ue5-map-probe.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Cook the converted maps for Linux with the selected UE 5 version
+        if: ${{ inputs.run_ue5_cook }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cook_log="$RUNNER_TEMP/ue5-linux-cook.log"
+          cook_output_dir="$RUNNER_TEMP/ue5-linux-cook-output"
+          cook_manifest="$cook_output_dir/ue5-linux-cook-manifest.txt"
+          mkdir -p "$cook_output_dir"
+          chmod 0777 "$cook_output_dir"
+          set +e
+          timeout -k 60s 3600s docker run --rm \
+            --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
+            --mount "type=bind,src=${cook_output_dir},dst=/workspace/output" \
+            --mount "type=bind,src=${GITHUB_WORKSPACE}/.github/scripts/ue5-linux-cook.sh,dst=/workspace/ue5-linux-cook.sh,readonly" \
+            --env "UE5_VERSION=$UE5_VERSION" \
+            "$UE5_IMAGE" \
+            bash /workspace/ue5-linux-cook.sh > "$cook_log" 2>&1
+          cook_status="$?"
+          set -e
+
+          cat "$cook_log"
+          echo "UE ${UE5_VERSION} Linux cook process status: $cook_status"
+
+          if [[ "$cook_status" = 124 ]]; then
+            echo "::error::The UE ${UE5_VERSION} Linux cook timed out."
+            exit 1
+          fi
+          if [[ "$cook_status" != 0 ]]; then
+            echo "::error::The UE ${UE5_VERSION} Linux cook failed."
+            exit "$cook_status"
+          fi
+
+          test -s "$cook_manifest"
+          required_cook_lines=(
+            "ZEN_UE5_COOK_BEGIN version=${UE5_VERSION} platform=Linux"
+            'ZEN_UE5_COOK_COMMANDLET_SUCCESS'
+            'ZEN_UE5_COOK_ASSET type=map file=Zen_Movie.umap'
+            'ZEN_UE5_COOK_ASSET type=map file=Zen_P.umap'
+            'ZEN_UE5_COOK_ASSET type=sequence file=MatineeActor_MovieLevelSequence.uasset'
+            'ZEN_UE5_COOK_ASSET type=sequence file=MatineeActorLevelSequence.uasset'
+            'ZEN_UE5_COOK_ASSET type=sequence file=MatineeActor3LevelSequence.uasset'
+            'ZEN_UE5_COOK_SUCCESS files='
+          )
+          for required_line in "${required_cook_lines[@]}"; do
+            if ! grep -Fq -- "$required_line" "$cook_log"; then
+              echo "::error::The UE ${UE5_VERSION} cook log is missing required evidence: ${required_line}"
+              exit 1
+            fi
+          done
+
+          if grep -Eq \
+            'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):|LoadErrors: (Error|Warning): CreateExport:|LogCook: (Error|Warning):|LogPackageName: (Error|Warning):|LogLinker: (Error|Warning):|LogAssetRegistry: (Error|Warning):|LogMaterial: (Error|Warning):|LogTexture: (Error|Warning):|LogAudio: (Error|Warning):|LogStreaming: (Error|Warning):|LogLevelSequence[^:]*: (Error|Warning):' \
+            "$cook_log"
+          then
+            echo "::error::The UE ${UE5_VERSION} cook emitted an asset, Blueprint, package, or cooker error/warning."
+            grep -E \
+              'LogBlueprint: (Error|Warning):|LogInit: Display: LogBlueprint: (Error|Warning):|LoadErrors: (Error|Warning): CreateExport:|LogCook: (Error|Warning):|LogPackageName: (Error|Warning):|LogLinker: (Error|Warning):|LogAssetRegistry: (Error|Warning):|LogMaterial: (Error|Warning):|LogTexture: (Error|Warning):|LogAudio: (Error|Warning):|LogStreaming: (Error|Warning):|LogLevelSequence[^:]*: (Error|Warning):' \
+              "$cook_log" || true
+            exit 1
+          fi
+
+          if grep -Eiq \
+            '(^|])Log[A-Za-z0-9_]+: Error:|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault|Cook failed|Unknown Cook Failure|LoadPackage: SkipPackage: /Game/Maps/MatineeActor(3|_Movie)?LevelSequence' \
+            "$cook_log"
+          then
+            echo "::error::The UE ${UE5_VERSION} cook log contains an engine error, missing sequence, abnormal-exit, or fatal marker."
+            grep -Ei \
+              '(^|])Log[A-Za-z0-9_]+: Error:|Exiting abnormally|Fatal error|Critical error|Assertion failed|Unhandled Exception|Segmentation fault|Cook failed|Unknown Cook Failure|LoadPackage: SkipPackage: /Game/Maps/MatineeActor(3|_Movie)?LevelSequence' \
+              "$cook_log" || true
+            exit 1
+          fi
+
+          cooked_file_count="$(wc -l < "$cook_manifest" | tr -d '[:space:]')"
+          echo "UE ${UE5_VERSION} cooked Zen_Movie, Zen_P, and all three generated Level Sequences for Linux across ${cooked_file_count} files."
+          {
+            echo
+            echo '## UE Linux cook'
+            echo
+            printf 'Cooked both converted maps and their transitive dependencies with `%s`.\n' "$UE5_IMAGE"
+            echo
+            echo '- Target platform: `Linux`'
+            echo '- Maps: `/Game/Maps/Zen_Movie`, `/Game/Maps/Zen_P`'
+            echo '- Generated Level Sequences present in cooked output: `3`'
+            printf '%s\n' "- Cooked files: \`${cooked_file_count}\`"
+            echo '- Cooked content remains runner-local; only the text audit is uploaded'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the UE 5 Linux cook audit
+        if: ${{ always() && inputs.run_ue5_cook }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ue5-linux-cook-audit
+          path: |
+            ${{ runner.temp }}/ue5-linux-cook.log
+            ${{ runner.temp }}/ue5-linux-cook-output/ue5-linux-cook-manifest.txt
           if-no-files-found: warn
           retention-days: 7

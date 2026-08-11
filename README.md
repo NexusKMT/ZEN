@@ -43,7 +43,10 @@ this public repository. It:
    its `Build.version`, starts a Python commandlet against the completed UE 4.27
    output, and loads both `/Game/Maps/Zen_Movie` and `/Game/Maps/Zen_P` plus
    all three generated Level Sequences while Content remains mounted
-   read-only.
+   read-only;
+8. optionally runs Epic's command-line Cook flow for Linux against those two
+   maps, proves all three generated Level Sequences reached the cooked output,
+   and uploads only its text log and sorted file manifest.
 
 The original expanded UE 4.23 project is always retained unchanged. The bridge
 commandlet verifies the expected Director, Fade, Sound, Event, and Toggle
@@ -72,7 +75,8 @@ The workflow enforces the migration order. `run_ue_container=true` is rejected
 unless `run_ue427_bridge=true`, so the selected UE 5 runtime cannot be pointed
 at the original UE 4.23 input by this workflow. The `ue5_version` choice is
 restricted to `5.4.4` and the previously validated `5.5.4`; `5.4.4` is the
-default target.
+default target. `run_ue5_cook=true` additionally requires source cleanup and a
+strict UE 5 load probe in the same run.
 
 ### Required repository secrets
 
@@ -132,6 +136,28 @@ gh workflow run ue55-asset-probe.yml \
   --field run_ue_container=true \
   --field ue5_version=5.4.4
 ```
+
+After the strict load probe passes, enable the next runtime-content gate with:
+
+```bash
+gh workflow run ue55-asset-probe.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field run_ue427_bridge=true \
+  --field remove_source_matinee=true \
+  --field run_ue_container=true \
+  --field run_ue5_cook=true \
+  --field ue5_version=5.4.4
+```
+
+The opt-in cook stage follows
+[Epic's command-line Cook contract](https://dev.epicgames.com/documentation/en-us/unreal-engine/cooking-content-in-unreal-engine)
+and targets Linux with both converted maps. It requires the three generated
+Level Sequences to appear in the cooked output and rejects Blueprint, Matinee
+`CreateExport`, package, linker, asset-registry, material, texture, audio,
+streaming, Level Sequence, and cooker errors or warnings. Cooked licensed
+content remains runner-local; GitHub receives only the text cook log and a
+sorted cooked-file manifest.
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
