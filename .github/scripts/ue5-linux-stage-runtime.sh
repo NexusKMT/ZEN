@@ -69,11 +69,20 @@ if [[ "$uat_status" != 0 ]]; then
 fi
 
 # The constrained runner's three shader workers emit one fixed performance
-# warning. Any other UE category diagnostic invalidates the staged package.
-allowed_engine_warning='LogShaderCompilers: Warning: Only 3 SCWs will be spawned, which will result in longer shader compile times.'
+# warning. The read-only Content bridge also produces two exact directory-create
+# warnings for the editor user's collection directory. Any other UE category
+# diagnostic invalidates the staged package.
+allowed_engine_warnings=(
+  'LogShaderCompilers: Warning: Only 3 SCWs will be spawned, which will result in longer shader compile times.'
+  "LogUnixPlatformFile: Warning: create dir('/workspace/output/EpicZenGarden-ue5-stage-project/Content/Developers/ue4') failed: errno=30 (Read-only file system)"
+  "LogUnixPlatformFile: Warning: create dir('/workspace/output/EpicZenGarden-ue5-stage-project/Content/Developers/ue4/Collections') failed: errno=30 (Read-only file system)"
+)
 unexpected_engine_diagnostics="$(grep -E \
   '(^|])([A-Za-z][A-Za-z0-9_]+): (Error|Warning):|LogInit: Display: ([A-Za-z][A-Za-z0-9_]+): (Error|Warning):' \
-  "$uat_log" | grep -Fv -- "$allowed_engine_warning" || true)"
+  "$uat_log" || true)"
+for allowed_engine_warning in "${allowed_engine_warnings[@]}"; do
+  unexpected_engine_diagnostics="$(printf '%s\n' "$unexpected_engine_diagnostics" | grep -Fv -- "$allowed_engine_warning" || true)"
+done
 if [[ -n "$unexpected_engine_diagnostics" ]]; then
   echo "The UE ${UE5_VERSION} BuildCookRun log emitted an unexpected engine error or warning." >&2
   printf '%s\n' "$unexpected_engine_diagnostics" >&2
