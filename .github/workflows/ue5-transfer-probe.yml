@@ -1,0 +1,152 @@
+name: UE 5 probe from rclone transfer
+
+on:
+  workflow_dispatch:
+    inputs:
+      ue427_transfer_stage:
+        description: Reusable UE 4.27 project stage stored on the authorized private remote
+        required: true
+        type: choice
+        default: ue427-clean
+        options:
+          - ue427-clean
+          - ue427-retained
+      ue427_transfer_key:
+        description: Transfer key reported by a completed UE 4.27 producer stage
+        required: true
+        type: string
+      ue5_version:
+        description: Exact Epic UE 5 development-container patch version to validate
+        required: true
+        type: choice
+        default: "5.4.4"
+        options:
+          - "5.4.4"
+          - "5.5.4"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ue5-transfer-probe
+  cancel-in-progress: false
+
+env:
+  PROJECT_ROOT_NAME: EpicZenGarden
+  RCLONE_RELEASE: "1.75.0"
+  RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+  UE5_VERSION: ${{ inputs.ue5_version }}
+  UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-${{ inputs.ue5_version }}
+
+jobs:
+  probe:
+    name: Download and probe
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+
+    steps:
+      - name: Check out the public harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Report initial runner capacity
+        shell: bash
+        run: df -hT / "$RUNNER_TEMP"
+
+      - name: Reclaim preinstalled runner space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be
+        with:
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: true
+          tool-cache: true
+          swap-storage: true
+
+      - name: Install pinned rclone
+        uses: ./.github/actions/setup-rclone
+        with:
+          version: ${{ env.RCLONE_RELEASE }}
+          bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
+
+      - name: Download the reusable UE 4.27 project
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+          TRANSFER_KEY: ${{ inputs.ue427_transfer_key }}
+          TRANSFER_STAGE: ${{ inputs.ue427_transfer_stage }}
+        run: |
+          set -euo pipefail
+
+          project_dir="$RUNNER_TEMP/ue427-rclone/$PROJECT_ROOT_NAME"
+          test ! -e "$project_dir"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" download \
+            "$project_dir" "$TRANSFER_STAGE" "$TRANSFER_KEY"
+
+          test -f "$project_dir/EpicZenGarden.uproject"
+          test -f "$project_dir/Content/Maps/Zen_Movie.umap"
+          test -f "$project_dir/Content/Maps/Zen_P.umap"
+          test -f "$project_dir/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
+          test -f "$project_dir/Content/Maps/MatineeActorLevelSequence.uasset"
+          test -f "$project_dir/Content/Maps/MatineeActor3LevelSequence.uasset"
+          printf 'UE427_PROJECT_DIR=%s\n' "$project_dir" >> "$GITHUB_ENV"
+
+          {
+            echo '## Reused UE 4.27 transfer'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            printf '| Transfer stage / key | `%s` / `%s` |\n' "$TRANSFER_STAGE" "$TRANSFER_KEY"
+            echo '| Download | `direct rclone copy followed by rclone check` |'
+            echo '| Consumer root | `fresh runner directory` |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Pull and verify the selected licensed UE 5 image
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          cleanup_login() {
+            docker logout ghcr.io >/dev/null 2>&1 || true
+          }
+          trap cleanup_login EXIT
+
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "${{ github.repository_owner }}" --password-stdin
+          bash "$GITHUB_WORKSPACE/.github/scripts/pull-ghcr-image.sh" "$UE5_IMAGE"
+          docker image inspect "$UE5_IMAGE" --format 'UE 5 image ID: {{.Id}} | Size: {{.Size}} bytes'
+
+          build_version="$(docker run --rm --entrypoint /bin/cat "$UE5_IMAGE" \
+            /home/ue4/UnrealEngine/Engine/Build/Build.version)"
+          printf '%s\n' "$build_version" | jq --exit-status \
+            --arg version "$UE5_VERSION" '
+            ($version | split(".") | map(tonumber)) as $expected |
+            ($expected | length) == 3 and
+            .MajorVersion == $expected[0] and
+            .MinorVersion == $expected[1] and
+            .PatchVersion == $expected[2]
+          ' >/dev/null || {
+            echo "::error::The selected Epic image did not contain the required UE ${UE5_VERSION} engine."
+            printf '%s\n' "$build_version"
+            exit 1
+          }
+          echo "Verified Epic image engine version: ${UE5_VERSION}"
+          df -hT / "$RUNNER_TEMP"
+
+      - name: Probe the selected UE 5 version with the project mounted read-only
+        id: ue5-probe
+        shell: bash
+        env:
+          SOURCE_CLEANUP_REQUESTED: ${{ inputs.ue427_transfer_stage == 'ue427-clean' }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-map-probe.sh"
+
+      - name: Upload the selected UE 5 map probe log
+        if: ${{ always() && steps.ue5-probe.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ue5-map-probe-log
+          path: ${{ runner.temp }}/ue5-map-probe.log
+          if-no-files-found: error
+          retention-days: 7

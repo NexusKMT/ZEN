@@ -56,15 +56,15 @@ rclone_args=(
   --log-level INFO
 )
 project_filters=(
-  --include '/*.uproject'
-  --include '/Config/**'
-  --include '/Content/**'
-  --include '/Build/**'
-  --include '/Plugins/**'
-  --include '/Source/**'
-  --include '/Binaries/**'
-  --include '/Saved/ZenMigration/**'
-  --exclude '*'
+  --filter '+ /*.uproject'
+  --filter '+ /Config/**'
+  --filter '+ /Content/**'
+  --filter '+ /Build/**'
+  --filter '+ /Plugins/**'
+  --filter '+ /Source/**'
+  --filter '+ /Binaries/**'
+  --filter '+ /Saved/ZenMigration/**'
+  --filter '- **'
 )
 
 if [[ "$direction" == upload ]]; then

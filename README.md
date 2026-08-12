@@ -41,8 +41,8 @@ this public repository. It:
    copy with UE 4.27.2, directly uploads its reusable project directories to
    the authorized private remote with rclone, and verifies the transfer with
    `rclone check`;
-7. when a UE 5 stage is requested, removes the runner-local UE 4.27 project,
-   downloads that private rclone transfer into a fresh directory, then pulls
+7. when a UE 5 stage is requested, downloads that private rclone transfer into
+   a separate fresh project root, selects it as the UE 5 input, then pulls
    the selected Epic UE 5 development image, verifies its `Build.version`, and
    starts a Python commandlet against the completed UE 4.27
    output, and loads both `/Game/Maps/Zen_Movie` and `/Game/Maps/Zen_P` plus
@@ -112,16 +112,19 @@ below `ZEN/intermediate/v1/<stage>/<transfer-key>/project`, where `<stage>` is
 `Saved` output. No tar or custom checkpoint envelope is created.
 
 Every upload is followed by an exact `rclone check`. When the same run continues
-into UE 5, it deletes the runner-local bridge project, downloads that remote
-directory into a fresh project root, and runs another exact `rclone check`.
+into UE 5, it downloads that remote directory into a separate fresh project
+root, selects the download as the consumer input, and runs another exact
+`rclone check`.
 This makes the UE 5 stage consume the rclone transfer rather than files left by
 the producer step. The Actions summary records the stage and transfer key, so a
 later workflow can accept the same key without rebuilding UE 4.27.
 
 This is the first extraction boundary for gradually decomposing the current
-workflow. The UE 5 probe/resave consumer can move into its own workflow without
-changing the transfer layout. A later UE 5-native project boundary can use the
-same direct-directory convention before Linux Cook and packaging are separated.
+workflow. The `UE 5 probe from rclone transfer` workflow is the first independent
+consumer: it accepts an existing stage and transfer key, downloads the project,
+and runs the same strict UE 5 probe without repeating archive retrieval or UE
+4.27 conversion. A later UE 5-native project boundary can use the same
+direct-directory convention before Linux Cook and packaging are separated.
 Cook or package outputs should become additional rclone boundaries only when a
 downstream workflow actually consumes them.
 
@@ -157,6 +160,17 @@ link into the read-only bridge mount, so it cannot save
 or upgrade licensed assets. The reusable UE 4.27 project is written to the
 authorized private remote for later stage reuse. GitHub artifacts still contain
 only the JSON migration audit and the text UE 4.27/UE 5 probe logs.
+
+Reuse a completed clean UE 4.27 transfer without rerunning its producer with:
+
+```bash
+gh workflow run ue5-transfer-probe.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field ue427_transfer_stage=ue427-clean \
+  --field ue427_transfer_key=<key-from-the-producer-summary> \
+  --field ue5_version=5.4.4
+```
 
 Run the source-cleanup gate only after the retained-source comparison has
 passed:
