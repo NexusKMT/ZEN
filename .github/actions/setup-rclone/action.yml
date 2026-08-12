@@ -1,0 +1,25 @@
+name: Set up pinned rclone
+description: Install a checksum-pinned rclone release for private checkpoint transfers.
+
+inputs:
+  version:
+    description: Exact rclone semantic version.
+    required: true
+  bundle-sha256:
+    description: SHA-256 of the official Linux AMD64 release ZIP.
+    required: true
+
+outputs:
+  rclone-bin:
+    description: Absolute path to the verified rclone binary.
+    value: ${{ steps.install.outputs.rclone-bin }}
+
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        RCLONE_RELEASE_INPUT: ${{ inputs.version }}
+        RCLONE_BUNDLE_SHA256_INPUT: ${{ inputs.bundle-sha256 }}
+      run: bash "$GITHUB_ACTION_PATH/../../scripts/install-rclone.sh"

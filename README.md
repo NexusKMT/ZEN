@@ -38,9 +38,13 @@ this public repository. It:
    or removes each one through an explicit audited input; the final `Zen_P`
    cleanup also validates and removes the exact unreachable historical
    `Unknown` Matinee-control cluster. It then resaves the runner-local project
-   copy with UE 4.27.2;
-7. optionally pulls the exact selected Epic UE 5 development image, verifies
-   its `Build.version`, starts a Python commandlet against the completed UE 4.27
+   copy with UE 4.27.2, directly uploads its reusable project directories to
+   the authorized private remote with rclone, and verifies the transfer with
+   `rclone check`;
+7. when a UE 5 stage is requested, removes the runner-local UE 4.27 project,
+   downloads that private rclone transfer into a fresh directory, then pulls
+   the selected Epic UE 5 development image, verifies its `Build.version`, and
+   starts a Python commandlet against the completed UE 4.27
    output, and loads both `/Game/Maps/Zen_Movie` and `/Game/Maps/Zen_P` plus
    all three generated Level Sequences while Content remains mounted
    read-only;
@@ -88,7 +92,7 @@ requires that strict Linux Cook in the same run.
 
 | Purpose | Requirement |
 | --- | --- |
-| Cloud archive access | Repository secret containing exactly one authorized remote configuration. Required for every run. |
+| Cloud archive and intermediate access | Repository secret containing exactly one authorized remote configuration. It supplies the source archive and stores reusable private stage transfers. Required for every run. |
 | `GHCR_TOKEN` | Classic GitHub PAT belonging to the repository owner, with `read:packages` and Epic Unreal Engine access. Required for either engine stage. |
 
 The workflow is `workflow_dispatch` only, so pull requests and forks cannot
@@ -96,6 +100,30 @@ cause cloud downloads or receive secrets. The transfer configuration is written 
 owner-only permissions below `RUNNER_TEMP` and removed when the transfer step
 ends. The downloaded archive and expanded project remain runner-local and are
 never uploaded as GitHub artifacts.
+
+### Private rclone stage boundaries
+
+The authorized private rclone remote is the durable boundary between expensive
+engine stages. A completed UE 4.27 bridge uploads the project directory directly
+below `ZEN/intermediate/v1/<stage>/<transfer-key>/project`, where `<stage>` is
+`ue427-retained` or `ue427-clean`. It includes the project descriptor,
+`Config`, `Content`, `Build`, `Plugins`, `Source`, `Binaries`, and
+`Saved/ZenMigration`; it excludes DDC, `Intermediate`, and other transient
+`Saved` output. No tar or custom checkpoint envelope is created.
+
+Every upload is followed by an exact `rclone check`. When the same run continues
+into UE 5, it deletes the runner-local bridge project, downloads that remote
+directory into a fresh project root, and runs another exact `rclone check`.
+This makes the UE 5 stage consume the rclone transfer rather than files left by
+the producer step. The Actions summary records the stage and transfer key, so a
+later workflow can accept the same key without rebuilding UE 4.27.
+
+This is the first extraction boundary for gradually decomposing the current
+workflow. The UE 5 probe/resave consumer can move into its own workflow without
+changing the transfer layout. A later UE 5-native project boundary can use the
+same direct-directory convention before Linux Cook and packaging are separated.
+Cook or package outputs should become additional rclone boundaries only when a
+downstream workflow actually consumes them.
 
 Licensed GHCR image pulls retry only when GitHub explicitly reports a
 `secondary rate limit`. In that case the workflow makes at most three attempts
@@ -126,9 +154,9 @@ UE 5 image, verify its embedded engine version, and run the map and Level
 Sequence load probe against the UE 4.27 bridge output. The UE 5 commandlet gets
 a writable temporary project shell, but its Content directory is a symbolic
 link into the read-only bridge mount, so it cannot save
-or upgrade licensed assets. Engine-stage project outputs remain runner-local
-and are not written back to OneDrive. GitHub artifacts contain only the JSON
-migration audit and the text UE 4.27/UE 5 probe logs.
+or upgrade licensed assets. The reusable UE 4.27 project is written to the
+authorized private remote for later stage reuse. GitHub artifacts still contain
+only the JSON migration audit and the text UE 4.27/UE 5 probe logs.
 
 Run the source-cleanup gate only after the retained-source comparison has
 passed:

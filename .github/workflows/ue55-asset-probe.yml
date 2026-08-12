@@ -63,6 +63,9 @@ jobs:
     name: Retrieve, verify, and inspect
     runs-on: ubuntu-24.04
     timeout-minutes: 180
+    outputs:
+      ue427-transfer-stage: ${{ steps.upload-ue427-project.outputs.transfer-stage }}
+      ue427-transfer-key: ${{ steps.upload-ue427-project.outputs.transfer-key }}
 
     steps:
       - name: Check out the public harness
@@ -121,28 +124,10 @@ jobs:
           docker system df
 
       - name: Install pinned rclone
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          tool_dir="$RUNNER_TEMP/rclone-tool"
-          bundle="$tool_dir/rclone.zip"
-          mkdir -p "$tool_dir"
-
-          curl --fail --location --silent --show-error --retry 5 \
-            --output "$bundle" \
-            "https://downloads.rclone.org/v${RCLONE_RELEASE}/rclone-v${RCLONE_RELEASE}-linux-amd64.zip"
-          printf '%s  %s\n' "$RCLONE_BUNDLE_SHA256" "$bundle" | sha256sum --check --status
-          unzip -q "$bundle" -d "$tool_dir"
-
-          rclone_bin="$(find "$tool_dir" -type f -name rclone -print -quit)"
-          test -n "$rclone_bin"
-          chmod 0755 "$rclone_bin"
-          version_line="$("$rclone_bin" version | sed -n '1p')"
-          test "$version_line" = "rclone v${RCLONE_RELEASE}"
-
-          printf 'RCLONE_BIN=%s\n' "$rclone_bin" >> "$GITHUB_ENV"
-          printf 'Installed %s\n' "$version_line"
+        uses: ./.github/actions/setup-rclone
+        with:
+          version: ${{ env.RCLONE_RELEASE }}
+          bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
 
       - name: Retrieve and verify the cloud archive
         shell: bash
@@ -1325,6 +1310,44 @@ jobs:
             echo '| Final Matinee-free Level Blueprint audit | `strictly verified when cleanup is enabled` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Upload the reusable UE 4.27 project with rclone
+        id: upload-ue427-project
+        if: ${{ inputs.run_ue427_bridge }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+
+          if [[ "${{ inputs.remove_source_matinee }}" == true ]]; then
+            transfer_stage=ue427-clean
+          else
+            transfer_stage=ue427-retained
+          fi
+          transfer_key="${ARCHIVE_SHA256:0:16}-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" upload \
+            "$UE427_PROJECT_DIR" "$transfer_stage" "$transfer_key"
+
+          printf 'UE427_TRANSFER_STAGE=%s\n' "$transfer_stage" >> "$GITHUB_ENV"
+          printf 'UE427_TRANSFER_KEY=%s\n' "$transfer_key" >> "$GITHUB_ENV"
+          printf 'transfer-stage=%s\n' "$transfer_stage" >> "$GITHUB_OUTPUT"
+          printf 'transfer-key=%s\n' "$transfer_key" >> "$GITHUB_OUTPUT"
+          project_files="$(find "$UE427_PROJECT_DIR" -type f | awk 'END { print NR + 0 }')"
+          {
+            echo
+            echo '## Reusable private UE 4.27 project'
+            echo
+            echo '| Check | Result |'
+            echo '| --- | --- |'
+            printf '| Transfer stage / key | `%s` / `%s` |\n' "$transfer_stage" "$transfer_key"
+            printf '| Local project files before filtering | `%s` |\n' "$project_files"
+            echo '| Transfer | `direct rclone copy followed by rclone check` |'
+            echo '| Included | `uproject, Config, Content, Build, Plugins, Source, Binaries, migration reports` |'
+            echo '| Excluded | `DerivedDataCache, Intermediate, general Saved output` |'
+            echo '| Storage | `authorized private remote; never a public Actions artifact` |'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload the UE 4.27 migration audit
         if: ${{ always() && inputs.run_ue427_bridge }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -1342,6 +1365,33 @@ jobs:
           path: ${{ runner.temp }}/ue427-logs/*.log
           if-no-files-found: warn
           retention-days: 7
+
+      - name: Replace the local UE 4.27 project with the rclone transfer
+        if: ${{ inputs.run_ue_container }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+
+          expected_project_dir="$RUNNER_TEMP/ue427-bridge/$PROJECT_ROOT_NAME"
+          test "$UE427_PROJECT_DIR" = "$expected_project_dir"
+          test -n "$UE427_TRANSFER_STAGE"
+          test -n "$UE427_TRANSFER_KEY"
+
+          rm -rf -- "$expected_project_dir"
+          mkdir -p "$expected_project_dir"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" download \
+            "$expected_project_dir" "$UE427_TRANSFER_STAGE" "$UE427_TRANSFER_KEY"
+
+          test -f "$expected_project_dir/EpicZenGarden.uproject"
+          test -d "$expected_project_dir/Content"
+          test -f "$expected_project_dir/Content/Maps/Zen_Movie.umap"
+          test -f "$expected_project_dir/Content/Maps/Zen_P.umap"
+          test -f "$expected_project_dir/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
+          test -f "$expected_project_dir/Content/Maps/MatineeActorLevelSequence.uasset"
+          test -f "$expected_project_dir/Content/Maps/MatineeActor3LevelSequence.uasset"
+          echo 'Replaced the runner-local bridge output with its verified rclone transfer.'
 
       - name: Replace UE 4.27 with the selected licensed UE 5 image
         if: ${{ inputs.run_ue_container }}
