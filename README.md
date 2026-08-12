@@ -172,6 +172,16 @@ gh workflow run ue5-transfer-probe.yml \
   --field ue5_version=5.4.4
 ```
 
+Reuse the same clean transfer for the independent Linux Cook gate with:
+
+```bash
+gh workflow run ue5-cook-from-transfer.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field ue427_transfer_key=<key-from-the-producer-summary> \
+  --field ue5_version=5.4.4
+```
+
 Run the source-cleanup gate only after the retained-source comparison has
 passed:
 
