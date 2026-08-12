@@ -16,7 +16,7 @@ mkdir -p "$stage_output_dir"
 chmod 0777 "$stage_output_dir"
 
 set +e
-timeout -k 60s 5400s docker run --rm \
+timeout -k 60s 10800s docker run --rm \
   --mount "type=bind,src=${UE427_PROJECT_DIR},dst=/workspace/EpicZenGarden,readonly" \
   --mount "type=bind,src=${stage_output_dir},dst=/workspace/output" \
   --mount "type=bind,src=${GITHUB_WORKSPACE}/.github/scripts/ue5-linux-stage-runtime.sh,dst=/workspace/ue5-linux-stage-runtime.sh,readonly" \

@@ -62,7 +62,7 @@ jobs:
   probe:
     name: Retrieve, verify, and inspect
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 240
     outputs:
       ue427-transfer-stage: ${{ steps.upload-ue427-project.outputs.transfer-stage }}
       ue427-transfer-key: ${{ steps.upload-ue427-project.outputs.transfer-key }}
