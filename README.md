@@ -123,10 +123,13 @@ This is the first extraction boundary for gradually decomposing the current
 workflow. The `UE 5 probe from rclone transfer` workflow is the first independent
 consumer: it accepts an existing stage and transfer key, downloads the project,
 and runs the same strict UE 5 probe without repeating archive retrieval or UE
-4.27 conversion. A later UE 5-native project boundary can use the same
-direct-directory convention before Linux Cook and packaging are separated.
-Cook or package outputs should become additional rclone boundaries only when a
-downstream workflow actually consumes them.
+4.27 conversion. The independent `UE 5 Linux cook from rclone transfer` and
+`UE 5 Linux stage and runtime from rclone transfer` workflows reuse that same
+clean project transfer and repeat the required probe/Cook gates on their own
+runner before producing their own local outputs. A later UE 5-native project
+boundary can use the same direct-directory convention before additional stages
+are separated. Cook or package outputs should become additional rclone
+boundaries only when a downstream workflow actually consumes them.
 
 Licensed GHCR image pulls retry only when GitHub explicitly reports a
 `secondary rate limit`. In that case the workflow makes at most three attempts
@@ -182,6 +185,17 @@ gh workflow run ue5-cook-from-transfer.yml \
   --field ue5_version=5.4.4
 ```
 
+Reuse the same clean transfer for the independent Linux stage/package/runtime
+gate with:
+
+```bash
+gh workflow run ue5-stage-from-transfer.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field ue427_transfer_key=<key-from-the-producer-summary> \
+  --field ue5_version=5.4.4
+```
+
 Run the source-cleanup gate only after the retained-source comparison has
 passed:
 
@@ -214,8 +228,9 @@ and targets Linux with both converted maps. It requires the three generated
 Level Sequences to appear in the cooked output and rejects Blueprint, Matinee
 `CreateExport`, package, linker, asset-registry, material, texture, audio,
 streaming, Level Sequence, and any other UE category errors or warnings. The
-only allowed diagnostic is Epic's fixed three-shader-worker performance notice
-from the constrained GitHub runner. Cooked licensed content remains
+allowed diagnostics are Epic's fixed three-shader-worker performance notice
+and the two exact `errno=30 (Read-only file system)` directory-create notices
+caused by the read-only Content bridge. Cooked licensed content remains
 runner-local; GitHub receives only the text cook log and a sorted cooked-file
 manifest.
 
@@ -243,6 +258,12 @@ must cleanly exit after loading its requested map with no UE error or warning;
 the combined logs must enumerate every converted Level Sequence. The staged
 package itself, executable, and licensed data remain runner-local. The uploaded
 audit is limited to the UAT/runtime text logs and sorted staged file manifest.
+
+The independent `ue5-stage-from-transfer.yml` workflow applies this same order
+from an existing clean transfer key: rclone download/check, UE 5 read-only
+probe, Linux Cook, then BuildCookRun/package/runtime. It uploads only the probe,
+Cook, UAT, runtime, and sorted manifest text audits; the staged package and all
+licensed content stay on its runner.
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
