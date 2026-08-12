@@ -95,6 +95,9 @@ else
   find "$project_dir" -maxdepth 1 -type f -name '*.uproject' -print -quit | grep -q . ||
     fail 'The downloaded directory does not contain a project descriptor.'
   [[ -d "$project_dir/Content" ]] || fail 'The downloaded directory does not contain Content.'
+  # The transfer config uses a restrictive umask. Make the ephemeral project
+  # readable by the licensed UE container user before it is bind-mounted.
+  chmod -R a+rX "$project_dir"
 fi
 
 file_count="$(find "$project_dir" -type f | awk 'END { print NR + 0 }')"
