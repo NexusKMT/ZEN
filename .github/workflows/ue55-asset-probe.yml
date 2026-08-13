@@ -32,9 +32,8 @@ on:
         description: Exact Epic UE 5 development-container patch version to validate
         required: true
         type: choice
-        default: "5.4.4"
+        default: "5.5.4"
         options:
-          - "5.4.4"
           - "5.5.4"
 
 permissions:
@@ -1310,6 +1309,11 @@ jobs:
             echo '| Final Matinee-free Level Blueprint audit | `strictly verified when cleanup is enabled` |'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Apply the UE5.5.4 A8/A9 iOS compatibility profile to the reusable project
+        if: ${{ inputs.run_ue427_bridge }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
+
       - name: Upload the reusable UE 4.27 project with rclone
         id: upload-ue427-project
         if: ${{ inputs.run_ue427_bridge }}
@@ -1393,6 +1397,11 @@ jobs:
           test -f "$consumer_project_dir/Content/Maps/MatineeActor3LevelSequence.uasset"
           printf 'UE427_PROJECT_DIR=%s\n' "$consumer_project_dir" >> "$GITHUB_ENV"
           echo 'Selected the verified rclone download as the UE 5 consumer project.'
+
+      - name: Apply the UE5.5.4 A8/A9 iOS compatibility profile
+        if: ${{ inputs.run_ue_container }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
 
       - name: Replace UE 4.27 with the selected licensed UE 5 image
         if: ${{ inputs.run_ue_container }}

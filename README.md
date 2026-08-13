@@ -82,11 +82,13 @@ implementation rationale.
 
 The workflow enforces the migration order. `run_ue_container=true` is rejected
 unless `run_ue427_bridge=true`, so the selected UE 5 runtime cannot be pointed
-at the original UE 4.23 input by this workflow. The `ue5_version` choice is
-restricted to `5.4.4` and the previously validated `5.5.4`; `5.4.4` is the
-default target. `run_ue5_cook=true` additionally requires source cleanup and a
-strict UE 5 load probe in the same run. `run_ue5_stage=true` additionally
-requires that strict Linux Cook in the same run.
+at the original UE 4.23 input by this workflow. The target is locked to
+**UE 5.5.4** for the A8/A8X/A9 device family. Every UE 5 consumer applies and
+audits the same `bSupportAppleA8=True`, iOS 15, Metal 2.4, traditional Mobile
+Renderer profile before probing, cooking, or staging. `run_ue5_cook=true`
+additionally requires source cleanup and a strict UE 5 load probe in the same
+run. `run_ue5_stage=true` additionally requires that strict Linux Cook in the
+same run.
 
 ### Required repository secrets
 
@@ -171,8 +173,7 @@ gh workflow run ue5-transfer-probe.yml \
   --repo NexusKMT/ZEN \
   --ref main \
   --field ue427_transfer_stage=ue427-clean \
-  --field ue427_transfer_key=<key-from-the-producer-summary> \
-  --field ue5_version=5.4.4
+  --field ue427_transfer_key=<key-from-the-producer-summary>
 ```
 
 Reuse the same clean transfer for the independent Linux Cook gate with:
@@ -181,8 +182,7 @@ Reuse the same clean transfer for the independent Linux Cook gate with:
 gh workflow run ue5-cook-from-transfer.yml \
   --repo NexusKMT/ZEN \
   --ref main \
-  --field ue427_transfer_key=<key-from-the-producer-summary> \
-  --field ue5_version=5.4.4
+  --field ue427_transfer_key=<key-from-the-producer-summary>
 ```
 
 Reuse the same clean transfer for the independent Linux stage/package/runtime
@@ -192,8 +192,7 @@ gate with:
 gh workflow run ue5-stage-from-transfer.yml \
   --repo NexusKMT/ZEN \
   --ref main \
-  --field ue427_transfer_key=<key-from-the-producer-summary> \
-  --field ue5_version=5.4.4
+  --field ue427_transfer_key=<key-from-the-producer-summary>
 ```
 
 Run the source-cleanup gate only after the retained-source comparison has
@@ -205,8 +204,7 @@ gh workflow run ue55-asset-probe.yml \
   --ref main \
   --field run_ue427_bridge=true \
   --field remove_source_matinee=true \
-  --field run_ue_container=true \
-  --field ue5_version=5.4.4
+  --field run_ue_container=true
 ```
 
 After the strict load probe passes, enable the next runtime-content gate with:
@@ -218,8 +216,7 @@ gh workflow run ue55-asset-probe.yml \
   --field run_ue427_bridge=true \
   --field remove_source_matinee=true \
   --field run_ue_container=true \
-  --field run_ue5_cook=true \
-  --field ue5_version=5.4.4
+  --field run_ue5_cook=true
 ```
 
 The opt-in cook stage follows
@@ -244,8 +241,7 @@ gh workflow run ue55-asset-probe.yml \
   --field remove_source_matinee=true \
   --field run_ue_container=true \
   --field run_ue5_cook=true \
-  --field run_ue5_stage=true \
-  --field ue5_version=5.4.4
+  --field run_ue5_stage=true
 ```
 
 The stage/runtime gate follows Epic's documented Linux `BuildCookRun` path and
@@ -265,6 +261,31 @@ probe, Linux Cook, then BuildCookRun/package/runtime. It uploads only the probe,
 Cook, UAT, runtime, and sorted manifest text audits; the staged package and all
 licensed content stay on its runner.
 
+### iOS A8/A9 packaging
+
+The final device build is isolated in `ue5-ios-a8a9-package.yml`. It runs on a
+self-hosted macOS runner labeled `self-hosted`, `macOS`, `ue5.5.4`, with the
+full UE 5.5.4 Engine installed. Repository variable `UE5_55_ENGINE_ROOT` must
+point to that install's `Engine` directory. The runner must also have a full
+Xcode installation, an `iphoneos` SDK, and a valid development signing setup
+in its keychain or in the optional `IOS_CODE_SIGN_IDENTITY` and
+`IOS_MOBILE_PROVISION` repository secrets. Command Line Tools alone are not
+enough.
+
+After a clean UE 4.27 transfer succeeds, start the device package with:
+
+```bash
+gh workflow run ue5-ios-a8a9-package.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field ue427_transfer_key=<key-from-the-producer-summary>
+```
+
+The workflow verifies UE 5.5.4 and the iPhoneOS SDK, reapplies the A8/A8X/A9
+profile, runs iOS `BuildCookRun` for `Zen_Movie` and `Zen_P`, requires exactly
+one IPA with a valid `Payload/*.app`, and uploads only text logs and a sorted
+manifest. The IPA and all licensed project data remain on the macOS runner.
+
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.
 Retained-source mode remains available for UE 4.27 bridge comparison, but the
@@ -276,10 +297,10 @@ all three generated Level Sequences. Any warning or missing success marker
 fails the run.
 
 Epic's public container documentation does not enumerate private patch tags.
-The workflow therefore treats both `dev-5.4.4` and `dev-5.5.4` as runtime
-assertions: the selected pull must succeed after licensed GHCR authentication,
-and `Engine/Build/Build.version` must exactly match `ue5_version` before the
-image is accepted.
+The workflow therefore treats `dev-5.5.4` as a runtime assertion: the selected
+pull must succeed after licensed GHCR authentication, and
+`Engine/Build/Build.version` must exactly match `ue5_version` before the image
+is accepted.
 
 ## Upstream references
 

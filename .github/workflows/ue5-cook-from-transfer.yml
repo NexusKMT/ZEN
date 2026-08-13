@@ -11,9 +11,8 @@ on:
         description: Exact Epic UE 5 development-container patch version to validate
         required: true
         type: choice
-        default: "5.4.4"
+        default: "5.5.4"
         options:
-          - "5.4.4"
           - "5.5.4"
 
 permissions:
@@ -88,6 +87,10 @@ jobs:
             echo '| Download | `direct rclone copy followed by rclone check` |'
             echo '| Consumer root | `fresh runner directory` |'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Apply the UE5.5.4 A8/A9 iOS compatibility profile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
 
       - name: Pull and verify the selected licensed UE 5 image
         shell: bash

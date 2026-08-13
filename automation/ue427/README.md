@@ -112,8 +112,10 @@ it produces `/Game/Maps/MatineeActor3LevelSequence`. When source cleanup is
 enabled, the selected UE 5 probe accepts no Blueprint compiler warning and no
 Matinee `CreateExport` warning. Retained-source mode remains useful for the
 UE 4.27 bridge audit but is not considered a clean UE 5 runtime result. The
-workflow currently allows exact `5.4.4` and `5.5.4` runtime checks, with
-`5.4.4` as the default.
+workflow targets exact **UE 5.5.4** runtime checks for the A8/A8X/A9 device
+family. The UE 5 consumer applies the audited iOS 15, Metal 2.4, and
+`bSupportAppleA8=True` compatibility profile before loading the converted
+project.
 
 `Zen_P` also contains one source-authored `Unknown` Matinee actor literal. Its
 four linked `Play`, `Pause`, and `SetPosition` calls predate the bridge and are
