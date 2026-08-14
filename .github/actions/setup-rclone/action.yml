@@ -8,6 +8,14 @@ inputs:
   bundle-sha256:
     description: SHA-256 of the official Linux AMD64 release ZIP.
     required: true
+  osx-amd64-bundle-sha256:
+    description: SHA-256 of the official macOS Intel release ZIP.
+    required: false
+    default: ""
+  osx-arm64-bundle-sha256:
+    description: SHA-256 of the official macOS Apple Silicon release ZIP.
+    required: false
+    default: ""
 
 outputs:
   rclone-bin:
@@ -22,4 +30,6 @@ runs:
       env:
         RCLONE_RELEASE_INPUT: ${{ inputs.version }}
         RCLONE_BUNDLE_SHA256_INPUT: ${{ inputs.bundle-sha256 }}
+        RCLONE_OSX_AMD64_BUNDLE_SHA256_INPUT: ${{ inputs.osx-amd64-bundle-sha256 }}
+        RCLONE_OSX_ARM64_BUNDLE_SHA256_INPUT: ${{ inputs.osx-arm64-bundle-sha256 }}
       run: bash "$GITHUB_ACTION_PATH/../../scripts/install-rclone.sh"
