@@ -79,6 +79,7 @@ uat_args=(
   -map=/Game/Maps/Zen_Movie+/Game/Maps/Zen_P
   -nocodesign
   "-ubtargs=-MaxParallelActions=2 -NoUBA -NoXGE"
+  "-xcodebuildoptions=CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= PROVISIONING_PROFILE_SPECIFIER= DEVELOPMENT_TEAM="
 )
 
 echo "ZEN_UE5_IOS_UNSIGNED_PACKAGE_BEGIN version=$UE5_VERSION sdk=$sdk_version target=A8/A8X/A9"

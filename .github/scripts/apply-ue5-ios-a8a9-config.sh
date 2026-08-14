@@ -39,14 +39,14 @@ r.Lumen.GlobalIllumination=0
 EOF
 fi
 
-unsigned_marker="; ZEN UE5.5.4 unsigned Modern Xcode profile"
+unsigned_marker="; ZEN UE5.5.4 unsigned Modern Xcode profile v2"
 if ! grep -Fqx "$unsigned_marker" "$engine_config" 2>/dev/null; then
   cat >> "$engine_config" <<'EOF'
 
-; ZEN UE5.5.4 unsigned Modern Xcode profile
+; ZEN UE5.5.4 unsigned Modern Xcode profile v2
 [/Script/MacTargetPlatform.XcodeProjectSettings]
 bUseModernXcode=True
-bUseModernCodeSigning=False
+bUseAutomaticCodeSigning=False
 EOF
 fi
 
@@ -63,7 +63,7 @@ required_settings=(
   'r.Lumen.Reflections=0'
   'r.Lumen.GlobalIllumination=0'
   'bUseModernXcode=True'
-  'bUseModernCodeSigning=False'
+  'bUseAutomaticCodeSigning=False'
 )
 for setting in "${required_settings[@]}"; do
   if ! grep -Fqx "$setting" "$engine_config"; then
