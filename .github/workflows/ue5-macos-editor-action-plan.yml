@@ -43,7 +43,7 @@ jobs:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_USERNAME: ${{ github.repository_owner }}
           PROBE_GHCR_IMAGE: false
-          RECLAIM_XCODE_SPACE: true
+          RECLAIM_XCODE_SPACE: false
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 
       - name: Reclaim audited non-target runner space

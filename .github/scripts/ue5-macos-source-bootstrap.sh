@@ -107,10 +107,14 @@ build_version_file="$SOURCE_DIR/Engine/Build/Build.version"
 setup_command="$SOURCE_DIR/Setup.sh"
 generate_command="$SOURCE_DIR/GenerateProjectFiles.command"
 build_command="$SOURCE_DIR/Engine/Build/BatchFiles/Mac/Build.sh"
+editor_services_dir="$HOME/Library/Services"
 test -f "$build_version_file" || fail 'The source checkout has no Engine/Build/Build.version.'
 test -x "$setup_command" || fail 'The source checkout has no executable Setup.sh.'
 test -x "$generate_command" || fail 'The source checkout has no executable GenerateProjectFiles.command.'
 test -x "$build_command" || fail 'The source checkout has no executable Mac Build.sh.'
+test ! -L "$editor_services_dir" || fail 'The user Services directory must not be a symbolic link.'
+mkdir -p "$editor_services_dir" || fail 'Could not create the user Services directory required by Epic Setup.sh.'
+test -d "$editor_services_dir" || fail 'The user Services directory required by Epic Setup.sh is unavailable.'
 
 setup_args=(--force --no-cache --threads=3)
 old_ifs="$IFS"
