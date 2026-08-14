@@ -10,9 +10,11 @@ set -euo pipefail
 
 SOURCE_DIR="${SOURCE_DIR:-$GITHUB_WORKSPACE/ue5-source}"
 SETUP_EXCLUDES="${SETUP_EXCLUDES:-Android,Linux,LinuxArm64,Win32,Win64,HoloLens,TVOS}"
+DISK_RESERVE_GIB="${DISK_RESERVE_GIB:-12}"
 audit_file="$RUNNER_TEMP/ue5-macos-source-bootstrap.txt"
 setup_log="$RUNNER_TEMP/ue5-macos-source-setup.log"
 generate_log="$RUNNER_TEMP/ue5-macos-source-generate.log"
+build_log="$RUNNER_TEMP/ue5-macos-source-build.log"
 disk_reserve="$RUNNER_TEMP/ue5-macos-source-disk-reserve"
 
 reserve_allocated=false
@@ -27,7 +29,7 @@ release_reserve() {
 
 cleanup() {
   release_reserve
-  rm -f "$setup_log" "$generate_log"
+  rm -f "$setup_log" "$generate_log" "$build_log"
 }
 trap cleanup EXIT
 
@@ -53,6 +55,7 @@ fail() {
     printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
     echo 'setup_cache=disabled'
     echo 'setup_threads=3'
+    echo 'build_max_parallel_actions=2'
     printf 'error=%s\n' "$*"
   } >> "$audit_file"
   echo "::error::$*"
@@ -87,10 +90,10 @@ umask 077
 : > "$audit_file"
 
 case "$BOOTSTRAP_STAGE" in
-  checkout | setup | generate)
+  checkout | setup | generate | build)
     ;;
   *)
-    fail 'BOOTSTRAP_STAGE must be checkout, setup, or generate.'
+    fail 'BOOTSTRAP_STAGE must be checkout, setup, generate, or build.'
     ;;
 esac
 
@@ -103,9 +106,11 @@ test -d "$SOURCE_DIR/.git" || fail 'The Unreal Engine source checkout is missing
 build_version_file="$SOURCE_DIR/Engine/Build/Build.version"
 setup_command="$SOURCE_DIR/Setup.sh"
 generate_command="$SOURCE_DIR/GenerateProjectFiles.command"
+build_command="$SOURCE_DIR/Engine/Build/BatchFiles/Mac/Build.sh"
 test -f "$build_version_file" || fail 'The source checkout has no Engine/Build/Build.version.'
 test -x "$setup_command" || fail 'The source checkout has no executable Setup.sh.'
 test -x "$generate_command" || fail 'The source checkout has no executable GenerateProjectFiles.command.'
+test -x "$build_command" || fail 'The source checkout has no executable Mac Build.sh.'
 
 setup_args=(--force --no-cache --threads=3)
 old_ifs="$IFS"
@@ -140,11 +145,17 @@ setup_seconds=0
 generate_seconds=0
 workspace_count=0
 tracked_changes_after=false
+build_seconds=0
+editor_arch=not-built
+editor_binary_bytes=0
 
 if test "$BOOTSTRAP_STAGE" != checkout; then
   current_phase=reserve-disk
   reserve_start="$(date +%s)"
-  mkfile 4g "$disk_reserve" || fail 'Could not allocate the 4 GiB emergency disk reserve.'
+  [[ "$DISK_RESERVE_GIB" =~ ^[0-9]+$ ]] || fail 'DISK_RESERVE_GIB must be an integer.'
+  (( DISK_RESERVE_GIB >= 4 )) || fail 'DISK_RESERVE_GIB must be at least 4 GiB.'
+  mkfile "${DISK_RESERVE_GIB}g" "$disk_reserve" ||
+    fail "Could not allocate the ${DISK_RESERVE_GIB} GiB emergency disk reserve."
   reserve_allocated=true
   reserve_seconds="$(( $(date +%s) - reserve_start ))"
   test -f "$disk_reserve" || fail 'The emergency disk reserve is missing.'
@@ -162,7 +173,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
   test -x "$SOURCE_DIR/Engine/Build/BatchFiles/RunUAT.sh" ||
     fail 'Setup did not leave an executable RunUAT.sh.'
 
-  if test "$BOOTSTRAP_STAGE" = generate; then
+  if test "$BOOTSTRAP_STAGE" = generate || test "$BOOTSTRAP_STAGE" = build; then
     current_phase=generate-project-files
     generate_start="$(date +%s)"
     if ! run_source_command "$generate_log" "$generate_command"; then
@@ -177,6 +188,38 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     done
     test -d "$SOURCE_DIR/UE5 (Mac).xcworkspace" || fail 'The Mac source workspace was not generated.'
     test -d "$SOURCE_DIR/UE5 (IOS).xcworkspace" || fail 'The iOS source workspace was not generated.'
+  fi
+
+  if test "$BOOTSTRAP_STAGE" = build; then
+    current_phase=build-unreal-editor
+    build_start="$(date +%s)"
+    if ! run_source_command "$build_log" "$build_command" \
+      UnrealEditor Mac Development \
+      -buildscw \
+      -MaxParallelActions=2 \
+      -NoUBA \
+      -NoUBALocal \
+      -NoXGE \
+      -NoFASTBuild \
+      -NoSNDBS \
+      -NoArtifactReads \
+      -NoArtifactWrites
+    then
+      fail 'UnrealEditor Mac Development build failed; inspect the live Actions log for its console output.'
+    fi
+    build_seconds="$(( $(date +%s) - build_start ))"
+    rm -f "$build_log"
+
+    editor_binary="$SOURCE_DIR/Engine/Binaries/Mac/UnrealEditor.app/Contents/MacOS/UnrealEditor"
+    shader_worker="$SOURCE_DIR/Engine/Binaries/Mac/ShaderCompileWorker"
+    test -x "$editor_binary" || fail 'The source build did not produce an executable UnrealEditor.'
+    test -x "$shader_worker" || fail 'The source build did not produce an executable ShaderCompileWorker.'
+    editor_file_info="$(file "$editor_binary")"
+    printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable arm64' ||
+      fail 'The UnrealEditor binary is not a native arm64 Mach-O executable.'
+    editor_arch=arm64
+    editor_binary_bytes="$(stat -f '%z' "$editor_binary")"
+    [[ "$editor_binary_bytes" =~ ^[0-9]+$ ]] || fail 'Could not measure the UnrealEditor binary.'
   fi
 
   source_final_mib="$(directory_size_mib "$SOURCE_DIR")"
@@ -204,10 +247,15 @@ disk_after_gib="$(disk_free_gib)"
   printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
   echo 'setup_cache=disabled'
   echo 'setup_threads=3'
+  printf 'disk_reserve_gib=%s\n' "$DISK_RESERVE_GIB"
+  echo 'build_max_parallel_actions=2'
   printf 'reserve_allocation_seconds=%s\n' "$reserve_seconds"
   printf 'setup_seconds=%s\n' "$setup_seconds"
   printf 'generate_seconds=%s\n' "$generate_seconds"
+  printf 'build_seconds=%s\n' "$build_seconds"
   printf 'workspace_count=%s\n' "$workspace_count"
+  printf 'editor_arch=%s\n' "$editor_arch"
+  printf 'editor_binary_bytes=%s\n' "$editor_binary_bytes"
   printf 'tracked_changes_after=%s\n' "$tracked_changes_after"
 } > "$audit_file"
 
@@ -223,6 +271,9 @@ disk_after_gib="$(disk_free_gib)"
   printf '| Setup / project generation | `%s s` / `%s s` |\n' "$setup_seconds" "$generate_seconds"
   printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
   echo '| GitDependencies cache / threads | `disabled` / `3` |'
+  printf '| Editor build / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
+  printf '| Editor binary | `%s`, `%s bytes` |\n' "$editor_arch" "$editor_binary_bytes"
+  printf '| Emergency disk reserve | `%s GiB` |\n' "$DISK_RESERVE_GIB"
   printf '| Generated Xcode workspaces | `%s` |\n' "$workspace_count"
   printf '| Free disk before / after | `%s GiB` / `%s GiB` |\n' "$disk_before_gib" "$disk_after_gib"
   printf '| Tracked source changes after bootstrap | `%s` |\n' "$tracked_changes_after"

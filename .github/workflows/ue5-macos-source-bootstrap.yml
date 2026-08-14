@@ -12,6 +12,7 @@ on:
           - checkout
           - setup
           - generate
+          - build
       reclaim_xcode_space:
         description: Remove unused versioned Xcode applications from the ephemeral runner
         required: true
@@ -37,9 +38,9 @@ env:
 
 jobs:
   bootstrap:
-    name: Checkout, set up, and generate UE source workspaces
+    name: Bootstrap and optionally build exact UE source
     runs-on: macos-14
-    timeout-minutes: 180
+    timeout-minutes: 360
 
     steps:
       - name: Check out the public harness
