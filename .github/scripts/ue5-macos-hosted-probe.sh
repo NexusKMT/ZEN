@@ -144,6 +144,7 @@ registry_token="$(jq -er '.token // .access_token' "$ghcr_token_response")" ||
 {
   printf 'silent\n'
   printf 'show-error\n'
+  printf 'location\n'
   printf 'header = "Authorization: Bearer %s"\n' "$registry_token"
   printf 'header = "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"\n'
 } > "$registry_curl_config"
