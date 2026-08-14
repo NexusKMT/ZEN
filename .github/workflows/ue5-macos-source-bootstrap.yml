@@ -1,4 +1,4 @@
-name: UE 5.5.4 hosted macOS source bootstrap
+name: UE 5.5.4 hosted macOS source and unsigned iOS
 
 on:
   workflow_dispatch:
@@ -13,6 +13,12 @@ on:
           - setup
           - generate
           - build
+          - package
+      ue427_transfer_key:
+        description: Clean UE 4.27 transfer key used by the package stage
+        required: true
+        type: string
+        default: 62f39841ebf78ba3-bdf677196afb-31674392278-1
       reclaim_xcode_space:
         description: Remove unused versioned Xcode applications from the ephemeral runner
         required: true
@@ -34,7 +40,14 @@ concurrency:
 env:
   UE5_VERSION: "5.5.4"
   UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+  UE5_ROOT: ${{ github.workspace }}/ue5-source/Engine
   XCODE_APP: /Applications/Xcode_15.4.app
+  PROJECT_ROOT_NAME: EpicZenGarden
+  UE427_TRANSFER_STAGE: ue427-clean
+  RCLONE_RELEASE: "1.75.0"
+  RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+  RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
+  RCLONE_OSX_ARM64_BUNDLE_SHA256: 35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8
 
 jobs:
   bootstrap:
@@ -78,14 +91,68 @@ jobs:
           BOOTSTRAP_STAGE: ${{ inputs.bootstrap_stage }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-source-bootstrap.sh"
 
-      - name: Upload sanitized bootstrap audits
+      - name: Install pinned rclone for the private project and output
+        if: ${{ inputs.bootstrap_stage == 'package' }}
+        uses: ./.github/actions/setup-rclone
+        with:
+          version: ${{ env.RCLONE_RELEASE }}
+          bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
+          osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
+          osx-arm64-bundle-sha256: ${{ env.RCLONE_OSX_ARM64_BUNDLE_SHA256 }}
+
+      - name: Download the clean UE 4.27 project
+        if: ${{ inputs.bootstrap_stage == 'package' }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+          TRANSFER_KEY: ${{ inputs.ue427_transfer_key }}
+        run: |
+          set -euo pipefail
+          project_dir="$RUNNER_TEMP/ue427-rclone/$PROJECT_ROOT_NAME"
+          test ! -e "$project_dir"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" download \
+            "$project_dir" "$UE427_TRANSFER_STAGE" "$TRANSFER_KEY"
+          test -f "$project_dir/EpicZenGarden.uproject"
+          test -f "$project_dir/Content/Maps/Zen_Movie.umap"
+          test -f "$project_dir/Content/Maps/Zen_P.umap"
+          test -f "$project_dir/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
+          test -f "$project_dir/Content/Maps/MatineeActorLevelSequence.uasset"
+          test -f "$project_dir/Content/Maps/MatineeActor3LevelSequence.uasset"
+          printf 'UE427_PROJECT_DIR=%s\n' "$project_dir" >> "$GITHUB_ENV"
+
+      - name: Apply and audit the UE5.5.4 A8/A9 profile
+        if: ${{ inputs.bootstrap_stage == 'package' }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
+
+      - name: Build and verify the unsigned iOS arm64 IPA
+        if: ${{ inputs.bootstrap_stage == 'package' }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-ios-package.sh"
+
+      - name: Upload and byte-verify the unsigned IPA on the private remote
+        if: ${{ inputs.bootstrap_stage == 'package' }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+          SOURCE_TRANSFER_KEY: ${{ inputs.ue427_transfer_key }}
+        run: |
+          set -euo pipefail
+          output_key="${SOURCE_TRANSFER_KEY}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-package-upload.sh" \
+            "${UNSIGNED_IPA_PATH%/*}" ios-unsigned "$output_key"
+
+      - name: Upload sanitized source and iOS text audits
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ue5-macos-source-bootstrap-audit
+          name: ue5-macos-source-ios-audit
           path: |
             ${{ runner.temp }}/ue5-macos-hosted-probe.txt
             ${{ runner.temp }}/ue5-macos-runner-space-reclaim.txt
             ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
+            ${{ runner.temp }}/ue5-ios-a8a9-uat.log
+            ${{ runner.temp }}/ue5-ios-a8a9-manifest.txt
+            ${{ runner.temp }}/ue5-ios-private-upload.txt
           if-no-files-found: warn
           retention-days: 7

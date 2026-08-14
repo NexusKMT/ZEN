@@ -90,10 +90,10 @@ umask 077
 : > "$audit_file"
 
 case "$BOOTSTRAP_STAGE" in
-  checkout | setup | generate | build)
+  checkout | setup | generate | build | package)
     ;;
   *)
-    fail 'BOOTSTRAP_STAGE must be checkout, setup, generate, or build.'
+    fail 'BOOTSTRAP_STAGE must be checkout, setup, generate, build, or package.'
     ;;
 esac
 
@@ -173,7 +173,9 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
   test -x "$SOURCE_DIR/Engine/Build/BatchFiles/RunUAT.sh" ||
     fail 'Setup did not leave an executable RunUAT.sh.'
 
-  if test "$BOOTSTRAP_STAGE" = generate || test "$BOOTSTRAP_STAGE" = build; then
+  if test "$BOOTSTRAP_STAGE" = generate || test "$BOOTSTRAP_STAGE" = build ||
+    test "$BOOTSTRAP_STAGE" = package
+  then
     current_phase=generate-project-files
     generate_start="$(date +%s)"
     if ! run_source_command "$generate_log" "$generate_command"; then
@@ -190,7 +192,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     test -d "$SOURCE_DIR/UE5 (IOS).xcworkspace" || fail 'The iOS source workspace was not generated.'
   fi
 
-  if test "$BOOTSTRAP_STAGE" = build; then
+  if test "$BOOTSTRAP_STAGE" = build || test "$BOOTSTRAP_STAGE" = package; then
     current_phase=build-unreal-editor
     build_start="$(date +%s)"
     if ! run_source_command "$build_log" "$build_command" \

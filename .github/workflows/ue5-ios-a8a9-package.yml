@@ -76,11 +76,8 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
 
-      - name: Build the iOS arm64 IPA
+      - name: Build the unsigned iOS arm64 IPA
         shell: bash
-        env:
-          IOS_CODE_SIGN_IDENTITY: ${{ secrets.IOS_CODE_SIGN_IDENTITY }}
-          IOS_MOBILE_PROVISION: ${{ secrets.IOS_MOBILE_PROVISION }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-ios-package.sh"
 
       - name: Upload iOS text audit only

@@ -39,6 +39,17 @@ r.Lumen.GlobalIllumination=0
 EOF
 fi
 
+unsigned_marker="; ZEN UE5.5.4 unsigned Modern Xcode profile"
+if ! grep -Fqx "$unsigned_marker" "$engine_config" 2>/dev/null; then
+  cat >> "$engine_config" <<'EOF'
+
+; ZEN UE5.5.4 unsigned Modern Xcode profile
+[/Script/MacTargetPlatform.XcodeProjectSettings]
+bUseModernXcode=True
+bUseModernCodeSigning=False
+EOF
+fi
+
 required_settings=(
   'bSupportAppleA8=True'
   'bSupportsMetal=True'
@@ -51,6 +62,8 @@ required_settings=(
   'r.Shadow.Virtual.Enable=0'
   'r.Lumen.Reflections=0'
   'r.Lumen.GlobalIllumination=0'
+  'bUseModernXcode=True'
+  'bUseModernCodeSigning=False'
 )
 for setting in "${required_settings[@]}"; do
   if ! grep -Fqx "$setting" "$engine_config"; then
@@ -74,6 +87,7 @@ if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
     echo '| iOS minimum | `IOS_15` |'
     echo '| Renderer | `Metal 2.4, traditional Mobile Renderer` |'
     echo '| A8 support | `bSupportAppleA8=True` |'
+    echo '| Xcode packaging | `Modern Xcode, code signing disabled` |'
     echo '| Modern renderer features | `Lumen/Nanite/Virtual Textures/Virtual Shadow Maps disabled` |'
   } >> "$GITHUB_STEP_SUMMARY"
 fi
