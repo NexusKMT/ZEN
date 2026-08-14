@@ -42,6 +42,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_USERNAME: ${{ github.repository_owner }}
+          PROBE_GHCR_IMAGE: false
           RECLAIM_XCODE_SPACE: true
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 

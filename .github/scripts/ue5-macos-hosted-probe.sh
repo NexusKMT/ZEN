@@ -11,6 +11,7 @@ UE5_VERSION="${UE5_VERSION:-5.5.4}"
 UE5_IMAGE="${UE5_IMAGE:-ghcr.io/epicgames/unreal-engine:dev-${UE5_VERSION}}"
 XCODE_APP="${XCODE_APP:-/Applications/Xcode_15.4.app}"
 RECLAIM_XCODE_SPACE="${RECLAIM_XCODE_SPACE:-true}"
+PROBE_GHCR_IMAGE="${PROBE_GHCR_IMAGE:-true}"
 SOURCE_BUILD_MIN_CPU="${SOURCE_BUILD_MIN_CPU:-4}"
 SOURCE_BUILD_MIN_MEMORY_GIB="${SOURCE_BUILD_MIN_MEMORY_GIB:-16}"
 SOURCE_BUILD_MIN_DISK_GIB="${SOURCE_BUILD_MIN_DISK_GIB:-150}"
@@ -66,6 +67,8 @@ command -v xcrun >/dev/null || fail 'xcrun is unavailable.'
 [[ "$UE5_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'UE5_VERSION must be an exact patch version.'
 [[ "$RECLAIM_XCODE_SPACE" = true || "$RECLAIM_XCODE_SPACE" = false ]] ||
   fail 'RECLAIM_XCODE_SPACE must be true or false.'
+[[ "$PROBE_GHCR_IMAGE" = true || "$PROBE_GHCR_IMAGE" = false ]] ||
+  fail 'PROBE_GHCR_IMAGE must be true or false.'
 
 target_xcode_parent="$(cd "$(dirname "$XCODE_APP")" && pwd -P)"
 target_xcode_name="$(basename "$XCODE_APP")"
@@ -122,93 +125,96 @@ test "$(xcode-select -p)" = "$XCODE_APP/Contents/Developer" ||
 disk_after_kib="$(disk_free_kib)"
 disk_after_gib="$((disk_after_kib / 1024 / 1024))"
 
-printf 'machine ghcr.io\nlogin %s\npassword %s\n' "$GHCR_USERNAME" "$GHCR_TOKEN" > "$ghcr_netrc"
-chmod 600 "$ghcr_netrc"
+ghcr_platforms=not-probed
+ghcr_has_darwin=false
+if test "$PROBE_GHCR_IMAGE" = true; then
+  printf 'machine ghcr.io\nlogin %s\npassword %s\n' "$GHCR_USERNAME" "$GHCR_TOKEN" > "$ghcr_netrc"
+  chmod 600 "$ghcr_netrc"
 
-if ! ghcr_token_http="$(
-  curl --silent --show-error \
-    --netrc-file "$ghcr_netrc" \
-    --get \
-    --data-urlencode 'service=ghcr.io' \
-    --data-urlencode 'scope=repository:epicgames/unreal-engine:pull' \
-    --output "$ghcr_token_response" \
-    --write-out '%{http_code}' \
-    'https://ghcr.io/token'
-)"; then
-  fail 'GHCR token exchange encountered a transport error.'
-fi
-test "$ghcr_token_http" = 200 || fail "GHCR token exchange failed with HTTP ${ghcr_token_http}."
-registry_token="$(jq -er '.token // .access_token' "$ghcr_token_response")" ||
-  fail 'GHCR token exchange did not return a registry token.'
-
-{
-  printf 'silent\n'
-  printf 'show-error\n'
-  printf 'location\n'
-  printf 'header = "Authorization: Bearer %s"\n' "$registry_token"
-  printf 'header = "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"\n'
-} > "$registry_curl_config"
-chmod 600 "$registry_curl_config"
-unset registry_token
-
-image_path="${UE5_IMAGE#ghcr.io/}"
-image_repository="${image_path%:*}"
-image_tag="${image_path##*:}"
-test "$image_repository" != "$image_path" || fail 'UE5_IMAGE must include an explicit tag.'
-[[ "$image_repository" =~ ^[a-z0-9._/-]+$ ]] || fail 'UE5_IMAGE contains an invalid repository path.'
-[[ "$image_tag" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'UE5_IMAGE contains an invalid tag.'
-
-if ! manifest_http="$(
-  curl --config "$registry_curl_config" \
-    --output "$manifest_file" \
-    --write-out '%{http_code}' \
-    "https://ghcr.io/v2/${image_repository}/manifests/${image_tag}"
-)"; then
-  fail 'GHCR manifest lookup encountered a transport error.'
-fi
-test "$manifest_http" = 200 || fail "GHCR manifest lookup failed with HTTP ${manifest_http}."
-jq -e 'type == "object"' "$manifest_file" >/dev/null || fail 'GHCR returned an invalid image manifest.'
-
-if jq -e '.manifests | type == "array"' "$manifest_file" >/dev/null 2>&1; then
-  jq -r '
-    .manifests[]?.platform |
-    select(.os != null and .architecture != null and .os != "unknown") |
-    if (.variant // "") == "" then
-      "\(.os)/\(.architecture)"
-    else
-      "\(.os)/\(.architecture)/\(.variant)"
-    end
-  ' "$manifest_file" | sort -u > "$platforms_file"
-else
-  config_digest="$(jq -er '.config.digest' "$manifest_file")" ||
-    fail 'The single-platform manifest did not contain an image config digest.'
-  [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'The image config digest is invalid.'
-  if ! config_http="$(
-    curl --config "$registry_curl_config" \
-      --output "$config_file" \
+  if ! ghcr_token_http="$(
+    curl --silent --show-error \
+      --netrc-file "$ghcr_netrc" \
+      --get \
+      --data-urlencode 'service=ghcr.io' \
+      --data-urlencode 'scope=repository:epicgames/unreal-engine:pull' \
+      --output "$ghcr_token_response" \
       --write-out '%{http_code}' \
-      "https://ghcr.io/v2/${image_repository}/blobs/${config_digest}"
+      'https://ghcr.io/token'
   )"; then
-    fail 'GHCR image config lookup encountered a transport error.'
+    fail 'GHCR token exchange encountered a transport error.'
   fi
-  test "$config_http" = 200 || fail "GHCR image config lookup failed with HTTP ${config_http}."
-  jq -r '
-    if (.os != null and .architecture != null) then
+  test "$ghcr_token_http" = 200 || fail "GHCR token exchange failed with HTTP ${ghcr_token_http}."
+  registry_token="$(jq -er '.token // .access_token' "$ghcr_token_response")" ||
+    fail 'GHCR token exchange did not return a registry token.'
+
+  {
+    printf 'silent\n'
+    printf 'show-error\n'
+    printf 'location\n'
+    printf 'header = "Authorization: Bearer %s"\n' "$registry_token"
+    printf 'header = "Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json"\n'
+  } > "$registry_curl_config"
+  chmod 600 "$registry_curl_config"
+  unset registry_token
+
+  image_path="${UE5_IMAGE#ghcr.io/}"
+  image_repository="${image_path%:*}"
+  image_tag="${image_path##*:}"
+  test "$image_repository" != "$image_path" || fail 'UE5_IMAGE must include an explicit tag.'
+  [[ "$image_repository" =~ ^[a-z0-9._/-]+$ ]] || fail 'UE5_IMAGE contains an invalid repository path.'
+  [[ "$image_tag" =~ ^[A-Za-z0-9._-]+$ ]] || fail 'UE5_IMAGE contains an invalid tag.'
+
+  if ! manifest_http="$(
+    curl --config "$registry_curl_config" \
+      --output "$manifest_file" \
+      --write-out '%{http_code}' \
+      "https://ghcr.io/v2/${image_repository}/manifests/${image_tag}"
+  )"; then
+    fail 'GHCR manifest lookup encountered a transport error.'
+  fi
+  test "$manifest_http" = 200 || fail "GHCR manifest lookup failed with HTTP ${manifest_http}."
+  jq -e 'type == "object"' "$manifest_file" >/dev/null || fail 'GHCR returned an invalid image manifest.'
+
+  if jq -e '.manifests | type == "array"' "$manifest_file" >/dev/null 2>&1; then
+    jq -r '
+      .manifests[]?.platform |
+      select(.os != null and .architecture != null and .os != "unknown") |
       if (.variant // "") == "" then
         "\(.os)/\(.architecture)"
       else
         "\(.os)/\(.architecture)/\(.variant)"
       end
-    else
-      empty
-    end
-  ' "$config_file" > "$platforms_file"
-fi
-test -s "$platforms_file" || fail 'No concrete platform was found in the GHCR image manifest.'
-ghcr_platforms="$(join_lines "$platforms_file")"
-ghcr_has_darwin=false
-if awk -F/ '$1 == "darwin" { found = 1 } END { exit !found }' "$platforms_file"; then
-  ghcr_has_darwin=true
+    ' "$manifest_file" | sort -u > "$platforms_file"
+  else
+    config_digest="$(jq -er '.config.digest' "$manifest_file")" ||
+      fail 'The single-platform manifest did not contain an image config digest.'
+    [[ "$config_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || fail 'The image config digest is invalid.'
+    if ! config_http="$(
+      curl --config "$registry_curl_config" \
+        --output "$config_file" \
+        --write-out '%{http_code}' \
+        "https://ghcr.io/v2/${image_repository}/blobs/${config_digest}"
+    )"; then
+      fail 'GHCR image config lookup encountered a transport error.'
+    fi
+    test "$config_http" = 200 || fail "GHCR image config lookup failed with HTTP ${config_http}."
+    jq -r '
+      if (.os != null and .architecture != null) then
+        if (.variant // "") == "" then
+          "\(.os)/\(.architecture)"
+        else
+          "\(.os)/\(.architecture)/\(.variant)"
+        end
+      else
+        empty
+      end
+    ' "$config_file" > "$platforms_file"
+  fi
+  test -s "$platforms_file" || fail 'No concrete platform was found in the GHCR image manifest.'
+  ghcr_platforms="$(join_lines "$platforms_file")"
+  if awk -F/ '$1 == "darwin" { found = 1 } END { exit !found }' "$platforms_file"; then
+    ghcr_has_darwin=true
+  fi
 fi
 
 {
