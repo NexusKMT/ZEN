@@ -9,6 +9,7 @@ set -euo pipefail
 : "${UE5_VERSION:?UE5_VERSION is required}"
 
 SOURCE_DIR="${SOURCE_DIR:-$GITHUB_WORKSPACE/ue5-source}"
+SETUP_EXCLUDES="${SETUP_EXCLUDES:-Android,Linux,LinuxArm64,Win32,Win64,HoloLens,TVOS}"
 audit_file="$RUNNER_TEMP/ue5-macos-source-bootstrap.txt"
 setup_log="$RUNNER_TEMP/ue5-macos-source-setup.log"
 generate_log="$RUNNER_TEMP/ue5-macos-source-generate.log"
@@ -49,6 +50,9 @@ fail() {
     printf 'stage=%s\n' "$BOOTSTRAP_STAGE"
     printf 'phase=%s\n' "$current_phase"
     printf 'disk_free_gib=%s\n' "$(disk_free_gib)"
+    printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
+    echo 'setup_cache=disabled'
+    echo 'setup_threads=3'
     printf 'error=%s\n' "$*"
   } >> "$audit_file"
   echo "::error::$*"
@@ -61,11 +65,12 @@ run_source_command() {
   local command_status
   local tee_status
   local pipeline_status
+  shift 2
 
   set +e
   (
     cd "$SOURCE_DIR"
-    "$command_path"
+    "$command_path" "$@"
   ) 2>&1 | tee "$log_file"
   pipeline_status=("${PIPESTATUS[@]}")
   set -e
@@ -96,11 +101,22 @@ command -v mkfile >/dev/null || fail 'mkfile is unavailable.'
 test -d "$SOURCE_DIR/.git" || fail 'The Unreal Engine source checkout is missing.'
 
 build_version_file="$SOURCE_DIR/Engine/Build/Build.version"
-setup_command="$SOURCE_DIR/Setup.command"
+setup_command="$SOURCE_DIR/Setup.sh"
 generate_command="$SOURCE_DIR/GenerateProjectFiles.command"
 test -f "$build_version_file" || fail 'The source checkout has no Engine/Build/Build.version.'
-test -x "$setup_command" || fail 'The source checkout has no executable Setup.command.'
+test -x "$setup_command" || fail 'The source checkout has no executable Setup.sh.'
 test -x "$generate_command" || fail 'The source checkout has no executable GenerateProjectFiles.command.'
+
+setup_args=(--force --no-cache --threads=3)
+old_ifs="$IFS"
+IFS=,
+read -r -a setup_exclude_items <<< "$SETUP_EXCLUDES"
+IFS="$old_ifs"
+test "${#setup_exclude_items[@]}" -gt 0 || fail 'SETUP_EXCLUDES must name at least one non-target platform.'
+for setup_exclude in "${setup_exclude_items[@]}"; do
+  [[ "$setup_exclude" =~ ^[A-Za-z0-9_]+$ ]] || fail 'SETUP_EXCLUDES contains an invalid folder name.'
+  setup_args+=("--exclude=$setup_exclude")
+done
 
 build_version="$(jq -c . "$build_version_file")" || fail 'Build.version is not valid JSON.'
 printf '%s\n' "$build_version" | jq --exit-status --arg version "$UE5_VERSION" '
@@ -135,8 +151,8 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
 
   current_phase=setup
   setup_start="$(date +%s)"
-  if ! run_source_command "$setup_log" "$setup_command"; then
-    fail 'Epic Setup.command failed; inspect the live Actions log for its console output.'
+  if ! run_source_command "$setup_log" "$setup_command" "${setup_args[@]}"; then
+    fail 'Epic Setup.sh failed; inspect the live Actions log for its console output.'
   fi
   setup_seconds="$(( $(date +%s) - setup_start ))"
   rm -f "$setup_log"
@@ -185,6 +201,9 @@ disk_after_gib="$(disk_free_gib)"
   printf 'source_checkout_mib=%s\n' "$source_checkout_mib"
   printf 'source_after_setup_mib=%s\n' "$source_after_setup_mib"
   printf 'source_final_mib=%s\n' "$source_final_mib"
+  printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
+  echo 'setup_cache=disabled'
+  echo 'setup_threads=3'
   printf 'reserve_allocation_seconds=%s\n' "$reserve_seconds"
   printf 'setup_seconds=%s\n' "$setup_seconds"
   printf 'generate_seconds=%s\n' "$generate_seconds"
@@ -202,6 +221,8 @@ disk_after_gib="$(disk_free_gib)"
   printf '| Source size checkout / post-setup / final | `%s MiB` / `%s MiB` / `%s MiB` |\n' \
     "$source_checkout_mib" "$source_after_setup_mib" "$source_final_mib"
   printf '| Setup / project generation | `%s s` / `%s s` |\n' "$setup_seconds" "$generate_seconds"
+  printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
+  echo '| GitDependencies cache / threads | `disabled` / `3` |'
   printf '| Generated Xcode workspaces | `%s` |\n' "$workspace_count"
   printf '| Free disk before / after | `%s GiB` / `%s GiB` |\n' "$disk_before_gib" "$disk_after_gib"
   printf '| Tracked source changes after bootstrap | `%s` |\n' "$tracked_changes_after"
