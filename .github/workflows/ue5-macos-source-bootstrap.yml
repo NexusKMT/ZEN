@@ -17,6 +17,11 @@ on:
         required: true
         type: boolean
         default: true
+      reclaim_runner_space:
+        description: Remove audited simulator, Android, toolcache, and browser directories from the ephemeral runner
+        required: true
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -48,6 +53,11 @@ jobs:
           RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 
+      - name: Reclaim audited non-target runner space
+        if: ${{ inputs.reclaim_runner_space }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-runner-space-reclaim.sh"
+
       - name: Check out exact licensed UE 5.5.4 source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
@@ -74,6 +84,7 @@ jobs:
           name: ue5-macos-source-bootstrap-audit
           path: |
             ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+            ${{ runner.temp }}/ue5-macos-runner-space-reclaim.txt
             ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
           if-no-files-found: warn
           retention-days: 7
