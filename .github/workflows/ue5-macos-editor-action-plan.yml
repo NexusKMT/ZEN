@@ -1,0 +1,112 @@
+name: UE 5.5.4 hosted macOS editor action plan
+
+on:
+  workflow_dispatch:
+    inputs:
+      ue427_transfer_key:
+        description: Clean UE 4.27 transfer key to analyze
+        required: true
+        type: string
+        default: 62f39841ebf78ba3-bdf677196afb-31674392278-1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ue5-macos-editor-action-plan
+  cancel-in-progress: false
+
+env:
+  UE5_VERSION: "5.5.4"
+  UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+  XCODE_APP: /Applications/Xcode_16.4.app
+  PROJECT_ROOT_NAME: EpicZenGarden
+  UE427_TRANSFER_STAGE: ue427-clean
+  RCLONE_RELEASE: "1.75.0"
+  RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+  RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
+  RCLONE_OSX_ARM64_BUNDLE_SHA256: 35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8
+
+jobs:
+  plan:
+    name: Compare generic and project-scoped editor actions
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the public harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Revalidate hosted macOS prerequisites
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ github.repository_owner }}
+          RECLAIM_XCODE_SPACE: true
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
+
+      - name: Reclaim audited non-target runner space
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-runner-space-reclaim.sh"
+
+      - name: Check out exact licensed UE 5.5.4 source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: EpicGames/UnrealEngine
+          ref: 5.5.4-release
+          token: ${{ secrets.GHCR_TOKEN }}
+          path: ue5-source
+          fetch-depth: 1
+          fetch-tags: false
+          lfs: false
+          submodules: false
+          persist-credentials: false
+
+      - name: Bootstrap UE source through Xcode project generation
+        shell: bash
+        env:
+          BOOTSTRAP_STAGE: generate
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-source-bootstrap.sh"
+
+      - name: Install pinned rclone
+        uses: ./.github/actions/setup-rclone
+        with:
+          version: ${{ env.RCLONE_RELEASE }}
+          bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
+          osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
+          osx-arm64-bundle-sha256: ${{ env.RCLONE_OSX_ARM64_BUNDLE_SHA256 }}
+
+      - name: Download the clean UE 4.27 project
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+          TRANSFER_KEY: ${{ inputs.ue427_transfer_key }}
+        run: |
+          set -euo pipefail
+          project_dir="$RUNNER_TEMP/ue427-rclone/$PROJECT_ROOT_NAME"
+          test ! -e "$project_dir"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" download \
+            "$project_dir" "$UE427_TRANSFER_STAGE" "$TRANSFER_KEY"
+          test -f "$project_dir/EpicZenGarden.uproject"
+          printf 'UE427_PROJECT_DIR=%s\n' "$project_dir" >> "$GITHUB_ENV"
+
+      - name: Apply the UE5.5.4 A8/A9 and unsigned Xcode profile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
+
+      - name: Compare UnrealEditor action graphs without compiling
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-editor-action-plan.sh"
+
+      - name: Upload sanitized action-plan text audits
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ue5-macos-editor-action-plan-audit
+          path: |
+            ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+            ${{ runner.temp }}/ue5-macos-runner-space-reclaim.txt
+            ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
+            ${{ runner.temp }}/ue5-macos-editor-action-plan.txt
+          if-no-files-found: warn
+          retention-days: 7
