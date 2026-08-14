@@ -8,6 +8,11 @@ on:
         required: true
         type: boolean
         default: true
+      audit_disk_usage:
+        description: Measure known hosted-runner disk consumers after Xcode cleanup without deleting them
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -39,11 +44,18 @@ jobs:
           RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 
+      - name: Audit known runner disk consumers
+        if: ${{ inputs.audit_disk_usage }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-runner-space-audit.sh"
+
       - name: Upload the sanitized feasibility audit
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: ue5-macos-hosted-probe-audit
-          path: ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+          path: |
+            ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+            ${{ runner.temp }}/ue5-macos-runner-space-audit.txt
           if-no-files-found: warn
           retention-days: 7
