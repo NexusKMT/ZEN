@@ -1,0 +1,49 @@
+name: UE 5.5.4 hosted macOS feasibility probe
+
+on:
+  workflow_dispatch:
+    inputs:
+      reclaim_xcode_space:
+        description: Remove unused versioned Xcode applications from the ephemeral runner before measuring capacity
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ue5-macos-hosted-probe
+  cancel-in-progress: false
+
+env:
+  UE5_VERSION: "5.5.4"
+  UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+  XCODE_APP: /Applications/Xcode_15.4.app
+
+jobs:
+  probe:
+    name: Inspect Xcode, GHCR, and Epic source access
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - name: Check out the public harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Run the hosted macOS feasibility probe
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ github.repository_owner }}
+          RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
+
+      - name: Upload the sanitized feasibility audit
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ue5-macos-hosted-probe-audit
+          path: ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+          if-no-files-found: warn
+          retention-days: 7
