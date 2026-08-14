@@ -1,11 +1,21 @@
-name: UE 5.5.4 iOS A8/A9 package
+name: UE 5.5.4 iOS A8/A9 IPA merge from reusable app
 
 on:
   workflow_dispatch:
     inputs:
-      ue427_transfer_key:
-        description: Clean UE 4.27 transfer key reported by a completed producer stage
+      app_transfer_key:
+        description: Private checkpoint key produced by the unsigned app workflow
         required: true
+        type: string
+      app_transfer_stage:
+        description: Private checkpoint stage for the unsigned app
+        required: true
+        default: ios-app
+        type: string
+      expected_producer_commit:
+        description: Optional producer commit to bind the downloaded app checkpoint to
+        required: false
+        default: ""
         type: string
 
 permissions:
@@ -16,34 +26,35 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  PROJECT_ROOT_NAME: EpicZenGarden
   RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
   RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
   RCLONE_OSX_ARM64_BUNDLE_SHA256: 35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8
   UE5_VERSION: "5.5.4"
-  UE5_ROOT: ${{ vars.UE5_55_ENGINE_ROOT }}
-  UE427_TRANSFER_STAGE: ue427-clean
 
 jobs:
-  package:
-    name: Download, validate, and package iOS
-    runs-on: [self-hosted, macOS, ue5.5.4]
-    timeout-minutes: 360
+  merge:
+    name: Download app and merge final unsigned IPA
+    runs-on: macos-15-intel
+    timeout-minutes: 45
 
     steps:
       - name: Check out the public harness
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
 
-      - name: Verify Xcode and iPhoneOS SDK
+      - name: Verify the hosted Intel merge environment
         shell: bash
         run: |
           set -euo pipefail
           test "$(uname -s)" = Darwin
-          xcode-select -p
-          xcodebuild -version
-          xcrun --sdk iphoneos --show-sdk-version
-          xcrun --sdk iphoneos --find clang
+          test "$(uname -m)" = x86_64
+          test -x /usr/libexec/PlistBuddy
+          for merge_tool in /usr/bin/codesign /usr/bin/ditto /usr/bin/lipo; do
+            test -x "$merge_tool"
+          done
+          command -v shasum >/dev/null
+          command -v tar >/dev/null
+          command -v unzip >/dev/null
 
       - name: Install pinned rclone
         uses: ./.github/actions/setup-rclone
@@ -53,40 +64,43 @@ jobs:
           osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
           osx-arm64-bundle-sha256: ${{ env.RCLONE_OSX_ARM64_BUNDLE_SHA256 }}
 
-      - name: Download the clean UE 4.27 project
+      - name: Download and verify the reusable unsigned app
         shell: bash
         env:
           RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
-          TRANSFER_KEY: ${{ inputs.ue427_transfer_key }}
+          EXPECTED_UE5_VERSION: ${{ env.UE5_VERSION }}
+          EXPECTED_PRODUCER_COMMIT: ${{ inputs.expected_producer_commit }}
+          APP_TRANSFER_STAGE: ${{ inputs.app_transfer_stage }}
+          APP_TRANSFER_KEY: ${{ inputs.app_transfer_key }}
         run: |
           set -euo pipefail
-          project_dir="$RUNNER_TEMP/ue427-rclone/$PROJECT_ROOT_NAME"
-          test ! -e "$project_dir"
-          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-project-transfer.sh" download \
-            "$project_dir" "$UE427_TRANSFER_STAGE" "$TRANSFER_KEY"
-          test -f "$project_dir/EpicZenGarden.uproject"
-          test -f "$project_dir/Content/Maps/Zen_Movie.umap"
-          test -f "$project_dir/Content/Maps/Zen_P.umap"
-          test -f "$project_dir/Content/Maps/MatineeActor_MovieLevelSequence.uasset"
-          test -f "$project_dir/Content/Maps/MatineeActorLevelSequence.uasset"
-          test -f "$project_dir/Content/Maps/MatineeActor3LevelSequence.uasset"
-          printf 'UE427_PROJECT_DIR=%s\n' "$project_dir" >> "$GITHUB_ENV"
+          app_dir="$RUNNER_TEMP/ue5-ios-app-transfer"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-ios-app-transfer.sh" \
+            download "$app_dir" "$APP_TRANSFER_STAGE" "$APP_TRANSFER_KEY"
 
-      - name: Apply and audit the UE5.5.4 A8/A9 profile
+      - name: Merge the app into the final unsigned IPA
         shell: bash
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-ios-merge-ipa.sh"
 
-      - name: Build the unsigned iOS arm64 IPA
+      - name: Upload and byte-verify the final unsigned IPA
         shell: bash
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-ios-package.sh"
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+          SOURCE_TRANSFER_KEY: ${{ inputs.app_transfer_key }}
+        run: |
+          set -euo pipefail
+          output_key="${SOURCE_TRANSFER_KEY}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-package-upload.sh" \
+            "${UNSIGNED_IPA_PATH%/*}" ios-unsigned "$output_key"
 
-      - name: Upload iOS text audit only
+      - name: Upload sanitized consumer audits
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
-          name: ue5-ios-a8a9-package-audit
+          name: ue5-ios-a8a9-merge-audit
           path: |
-            ${{ runner.temp }}/ue5-ios-a8a9-uat.log
-            ${{ runner.temp }}/ue5-ios-a8a9-manifest.txt
+            ${{ runner.temp }}/ue5-ios-app-private-transfer.txt
+            ${{ runner.temp }}/ue5-ios-a8a9-merge-manifest.txt
+            ${{ runner.temp }}/ue5-ios-private-upload.txt
           if-no-files-found: warn
           retention-days: 7

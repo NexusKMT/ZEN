@@ -90,10 +90,10 @@ umask 077
 : > "$audit_file"
 
 case "$BOOTSTRAP_STAGE" in
-  checkout | setup | generate | build | package)
+  checkout | setup | generate | build)
     ;;
   *)
-    fail 'BOOTSTRAP_STAGE must be checkout, setup, generate, build, or package.'
+    fail 'BOOTSTRAP_STAGE must be checkout, setup, generate, or build.'
     ;;
 esac
 
@@ -177,9 +177,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
   test -x "$SOURCE_DIR/Engine/Build/BatchFiles/RunUAT.sh" ||
     fail 'Setup did not leave an executable RunUAT.sh.'
 
-  if test "$BOOTSTRAP_STAGE" = generate || test "$BOOTSTRAP_STAGE" = build ||
-    test "$BOOTSTRAP_STAGE" = package
-  then
+  if test "$BOOTSTRAP_STAGE" = generate || test "$BOOTSTRAP_STAGE" = build; then
     current_phase=generate-project-files
     generate_start="$(date +%s)"
     if ! run_source_command "$generate_log" "$generate_command"; then
@@ -196,7 +194,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     test -d "$SOURCE_DIR/UE5 (IOS).xcworkspace" || fail 'The iOS source workspace was not generated.'
   fi
 
-  if test "$BOOTSTRAP_STAGE" = build || test "$BOOTSTRAP_STAGE" = package; then
+  if test "$BOOTSTRAP_STAGE" = build; then
     current_phase=build-unreal-editor
     build_start="$(date +%s)"
     if ! run_source_command "$build_log" "$build_command" \
@@ -221,9 +219,13 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     test -x "$editor_binary" || fail 'The source build did not produce an executable UnrealEditor.'
     test -x "$shader_worker" || fail 'The source build did not produce an executable ShaderCompileWorker.'
     editor_file_info="$(file "$editor_binary")"
-    printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable arm64' ||
-      fail 'The UnrealEditor binary is not a native arm64 Mach-O executable.'
-    editor_arch=arm64
+    if printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable arm64'; then
+      editor_arch=arm64
+    elif printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable x86_64'; then
+      editor_arch=x86_64
+    else
+      fail 'The UnrealEditor binary is not a native arm64 or x86_64 Mach-O executable.'
+    fi
     editor_binary_bytes="$(stat -f '%z' "$editor_binary")"
     [[ "$editor_binary_bytes" =~ ^[0-9]+$ ]] || fail 'Could not measure the UnrealEditor binary.'
   fi

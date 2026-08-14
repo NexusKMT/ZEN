@@ -263,28 +263,45 @@ licensed content stay on its runner.
 
 ### iOS A8/A9 packaging
 
-The final device build is isolated in `ue5-ios-a8a9-package.yml`. It runs on a
-self-hosted macOS runner labeled `self-hosted`, `macOS`, `ue5.5.4`, with the
-full UE 5.5.4 Engine installed. Repository variable `UE5_55_ENGINE_ROOT` must
-point to that install's `Engine` directory. The runner must also have a full
-Xcode installation, an `iphoneos` SDK, and a valid development signing setup
-in its keychain or in the optional `IOS_CODE_SIGN_IDENTITY` and
-`IOS_MOBILE_PROVISION` repository secrets. Command Line Tools alone are not
-enough.
+The expensive UE 5.5.4 source bootstrap, editor build, cook, stage, and
+unsigned `.app` production are isolated in `ue5-ios-app-producer.yml`. The
+producer runs on the GitHub-hosted Apple Silicon `macos-14` label, downloads a
+clean UE 4.27 project transfer, validates exactly one unsigned arm64 app bundle,
+packs it as one tar checkpoint, uploads it to the authorized private rclone
+remote, and reads the tar back for a byte-for-byte SHA-256 check. The licensed
+app is never published as a GitHub artifact.
 
-After a clean UE 4.27 transfer succeeds, start the device package with:
+Choose a new lowercase immutable checkpoint key and start the producer after a
+clean UE 4.27 transfer succeeds:
+
+```bash
+gh workflow run ue5-ios-app-producer.yml \
+  --repo NexusKMT/ZEN \
+  --ref main \
+  --field ue427_transfer_key=<key-from-the-ue427-producer-summary> \
+  --field app_transfer_key=<new-immutable-app-key>
+```
+
+The final IPA-only boundary is `ue5-ios-a8a9-package.yml`. It runs on
+`macos-15-intel`, downloads and verifies the reusable app checkpoint, confirms
+that the app is unsigned arm64 content, wraps it below `Payload/`, and uploads
+the resulting unsigned IPA to the private rclone output namespace. It does not
+check out Unreal Engine source, select Xcode, require an iPhoneOS SDK, or repeat
+build, cook, stage, or package work.
+
+Reuse a completed app checkpoint with:
 
 ```bash
 gh workflow run ue5-ios-a8a9-package.yml \
   --repo NexusKMT/ZEN \
   --ref main \
-  --field ue427_transfer_key=<key-from-the-producer-summary>
+  --field app_transfer_key=<immutable-app-key>
 ```
 
-The workflow verifies UE 5.5.4 and the iPhoneOS SDK, reapplies the A8/A8X/A9
-profile, runs iOS `BuildCookRun` for `Zen_Movie` and `Zen_P`, requires exactly
-one IPA with a valid `Payload/*.app`, and uploads only text logs and a sorted
-manifest. The IPA and all licensed project data remain on the macOS runner.
+Set `expected_producer_commit` when the consumer must bind the checkpoint to an
+exact public harness commit. Both workflows upload only sanitized text audits
+to GitHub Actions; reusable `.app` and final `.ipa` binaries remain on the
+authorized private remote.
 
 The cleanup input is rejected unless the UE 4.27 bridge is enabled. It affects
 only that stage's writable copy; the expanded UE 4.23 input remains unchanged.

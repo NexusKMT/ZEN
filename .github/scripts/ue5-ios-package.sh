@@ -19,6 +19,7 @@ manifest="$RUNNER_TEMP/ue5-ios-a8a9-manifest.txt"
 zip_listing="$RUNNER_TEMP/ue5-ios-a8a9-zip-list.txt"
 unsigned_root="$RUNNER_TEMP/ue5-ios-a8a9-unsigned"
 output_root="$RUNNER_TEMP/ue5-ios-a8a9-output"
+app_output_root="$RUNNER_TEMP/ue5-ios-a8a9-app"
 
 test "$UE5_VERSION" = "5.5.4"
 test -f "$project_file"
@@ -52,13 +53,13 @@ xcrun --sdk iphoneos --find clang >/dev/null
 chmod -R u+rwX "$UE427_PROJECT_DIR"
 bash "$GITHUB_WORKSPACE/.github/scripts/apply-ue5-ios-a8a9-config.sh" "$UE427_PROJECT_DIR"
 
-for reset_dir in "$archive_root" "$unsigned_root" "$output_root"; do
+for reset_dir in "$archive_root" "$unsigned_root" "$output_root" "$app_output_root"; do
   [[ "$reset_dir" == "$RUNNER_TEMP/"* ]]
   test "$reset_dir" != "$RUNNER_TEMP"
   test ! -L "$reset_dir"
   rm -rf -- "$reset_dir"
 done
-mkdir -p "$archive_root" "$unsigned_root/Payload" "$output_root"
+mkdir -p "$archive_root" "$unsigned_root/Payload" "$output_root" "$app_output_root"
 
 uat_args=(
   BuildCookRun
@@ -132,6 +133,45 @@ if /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1; then
   exit 1
 fi
 
+if [[ "${IOS_APP_ONLY:-false}" == true ]]; then
+  app_output="$app_output_root/$(basename "$app")"
+  /usr/bin/ditto "$app" "$app_output"
+  app_bytes="$(cd "$app_output" && find . -type f -exec stat -f '%z' {} + | awk '{ total += $1 } END { print total + 0 }')"
+  app_sha256="$(cd "$app_output" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256 | awk '{ print $1 }')"
+  [[ "$app_bytes" =~ ^[0-9]+$ ]]
+  [[ "$app_sha256" =~ ^[0-9a-f]{64}$ ]]
+  {
+    echo 'UE5_IOS_UNSIGNED_APP_SUCCESS'
+    printf 'ue5_version=%s\n' "$UE5_VERSION"
+    printf 'sdk_version=%s\n' "$sdk_version"
+    printf 'app_name=%s\n' "$(basename "$app")"
+    printf 'app_executable=%s\n' "$app_executable"
+    printf 'app_architectures=%s\n' "$app_architectures"
+    printf 'app_bytes=%s\n' "$app_bytes"
+    printf 'app_sha256=%s\n' "$app_sha256"
+    echo 'code_signing=disabled'
+    echo 'embedded_mobileprovision=absent'
+    echo 'ipa_merge=deferred'
+  } > "$RUNNER_TEMP/ue5-ios-a8a9-app-manifest.txt"
+  printf 'IOS_APP_DIR=%s\n' "$app_output_root" >> "$GITHUB_ENV"
+  printf 'IOS_APP_NAME=%s\n' "$(basename "$app")" >> "$GITHUB_ENV"
+  printf 'IOS_APP_SHA256=%s\n' "$app_sha256" >> "$GITHUB_ENV"
+  echo "ZEN_UE5_IOS_UNSIGNED_APP_SUCCESS app=$app_output sdk=$sdk_version sha256=$app_sha256"
+  {
+    echo
+    echo '## UE5.5.4 unsigned iOS app producer'
+    echo
+    echo '| Check | Result |'
+    echo '| --- | --- |'
+    echo '| Engine | `UE 5.5.4` |'
+    printf '| iPhoneOS SDK | `%s` |\n' "$sdk_version"
+    echo '| Target | `A8 / A8X / A9, arm64` |'
+    echo '| Signing / provisioning | `disabled` / `absent` |'
+    printf '| App bundle | `%s`, `%s bytes`, manifest SHA-256 `%s` |\n' "$(basename "$app")" "$app_bytes" "$app_sha256"
+    echo '| Reusable transfer | `private rclone; IPA merge intentionally deferred` |'
+  } >> "$GITHUB_STEP_SUMMARY"
+  exit 0
+fi
 payload_app="$unsigned_root/Payload/$(basename "$app")"
 /usr/bin/ditto "$app" "$payload_app"
 ipa="$output_root/EpicZenGarden-UE${UE5_VERSION}-unsigned.ipa"
