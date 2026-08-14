@@ -1,0 +1,50 @@
+name: macOS 15 Intel availability probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: Allocate and inspect macos-15-intel
+    runs-on: macos-15-intel
+    timeout-minutes: 15
+
+    steps:
+      - name: Record runner facts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          machine_arch="$(uname -m)"
+          physical_cpu="$(sysctl -n hw.physicalcpu)"
+          logical_cpu="$(sysctl -n hw.logicalcpu)"
+          memory_bytes="$(sysctl -n hw.memsize)"
+          memory_gib="$(awk -v bytes="$memory_bytes" 'BEGIN { printf "%.1f", bytes / 1024 / 1024 / 1024 }')"
+          macos_version="$(sw_vers -productVersion)"
+          xcode_version="$(xcodebuild -version | paste -sd ' ' -)"
+          disk_total="$(df -h / | awk 'NR == 2 { print $2 }')"
+          disk_available="$(df -h / | awk 'NR == 2 { print $4 }')"
+
+          {
+            echo "# macos-15-intel runner probe"
+            echo
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Runner name | ${RUNNER_NAME:-unknown} |"
+            echo "| Runner architecture | ${RUNNER_ARCH:-unknown} |"
+            echo "| Machine architecture | $machine_arch |"
+            echo "| Image OS | ${ImageOS:-unknown} |"
+            echo "| Image version | ${ImageVersion:-unknown} |"
+            echo "| macOS | $macos_version |"
+            echo "| Physical CPU | $physical_cpu |"
+            echo "| Logical CPU | $logical_cpu |"
+            echo "| Memory | ${memory_gib} GiB |"
+            echo "| Root disk | $disk_total total, $disk_available available |"
+            echo "| Xcode | $xcode_version |"
+          } | tee "$GITHUB_STEP_SUMMARY"
+
+          test "${RUNNER_ARCH:-}" = "X64"
+          test "$machine_arch" = "x86_64"
