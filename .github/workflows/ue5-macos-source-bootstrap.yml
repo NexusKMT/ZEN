@@ -1,0 +1,79 @@
+name: UE 5.5.4 hosted macOS source bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      bootstrap_stage:
+        description: Furthest source bootstrap stage to execute
+        required: true
+        type: choice
+        default: generate
+        options:
+          - checkout
+          - setup
+          - generate
+      reclaim_xcode_space:
+        description: Remove unused versioned Xcode applications from the ephemeral runner
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ue5-macos-source-bootstrap
+  cancel-in-progress: false
+
+env:
+  UE5_VERSION: "5.5.4"
+  UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
+  XCODE_APP: /Applications/Xcode_15.4.app
+
+jobs:
+  bootstrap:
+    name: Checkout, set up, and generate UE source workspaces
+    runs-on: macos-14
+    timeout-minutes: 180
+
+    steps:
+      - name: Check out the public harness
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+
+      - name: Revalidate hosted macOS prerequisites
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          GHCR_USERNAME: ${{ github.repository_owner }}
+          RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
+
+      - name: Check out exact licensed UE 5.5.4 source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          repository: EpicGames/UnrealEngine
+          ref: 5.5.4-release
+          token: ${{ secrets.GHCR_TOKEN }}
+          path: ue5-source
+          fetch-depth: 1
+          fetch-tags: false
+          lfs: false
+          submodules: false
+          persist-credentials: false
+
+      - name: Bootstrap exact UE source
+        shell: bash
+        env:
+          BOOTSTRAP_STAGE: ${{ inputs.bootstrap_stage }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-source-bootstrap.sh"
+
+      - name: Upload sanitized bootstrap audits
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: ue5-macos-source-bootstrap-audit
+          path: |
+            ${{ runner.temp }}/ue5-macos-hosted-probe.txt
+            ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
+          if-no-files-found: warn
+          retention-days: 7
