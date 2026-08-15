@@ -17,9 +17,12 @@ EXPECTED_RUNNER_ARCH="${EXPECTED_RUNNER_ARCH:-X64}"
 EXPECTED_XCODE_VERSION="${EXPECTED_XCODE_VERSION:-16.4}"
 EXPECTED_XCODE_BUILD="${EXPECTED_XCODE_BUILD:-16F6}"
 EXPECTED_IPHONEOS_SDK="${EXPECTED_IPHONEOS_SDK:-18.5}"
-BUILD_COMPILER_ARGUMENTS="-Wno-shorten-64-to-32"
+BUILD_COMPILER_ARGUMENTS="-Wno-shorten-64-to-32 -Wno-missing-template-arg-list-after-template-kw"
+BUILD_MAX_PARALLEL_ACTIONS=8
 FBX_REDBLACKTREE_SHA256_BEFORE="cd5891b83493f1335302eedf2f62498ce5b42d9a9fdaa4fc02d2437194522c1b"
 FBX_REDBLACKTREE_SHA256_AFTER="49efee242da7c0381dcb56f524c496e0f95d19bd39ba20367ba893c52d3d6a97"
+CONTENT_BROWSER_MENU_CONTEXTS_SHA256_BEFORE="94404589b34ffd59dd9c409c086caac83dcc3e96912110e741a3661088d21101"
+CONTENT_BROWSER_MENU_CONTEXTS_SHA256_AFTER="874744f6a6a6e7355ca34d463a6dcdd579f09430d5d6e66280ba307b83545346"
 audit_file="$RUNNER_TEMP/ue5-macos-source-bootstrap.txt"
 setup_log="$RUNNER_TEMP/ue5-macos-source-setup.log"
 generate_log="$RUNNER_TEMP/ue5-macos-source-generate.log"
@@ -64,7 +67,7 @@ fail() {
     printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
     echo 'setup_cache=disabled'
     echo 'setup_threads=3'
-    echo 'build_max_parallel_actions=2'
+    printf 'build_max_parallel_actions=%s\n' "$BUILD_MAX_PARALLEL_ACTIONS"
     printf 'error=%s\n' "$*"
   } >> "$audit_file"
   echo "::error::$*"
@@ -190,6 +193,7 @@ editor_arch=not-built
 shader_worker_arch=not-built
 editor_binary_bytes=0
 fbx_redblacktree_patch=not-required
+content_browser_menu_contexts_patch=not-required
 
 if test "$BOOTSTRAP_STAGE" != checkout; then
   current_phase=reserve-disk
@@ -234,6 +238,25 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
 
   if test "$BOOTSTRAP_STAGE" = build; then
     current_phase=apply-xcode-compatibility
+    content_browser_menu_contexts_file="$SOURCE_DIR/Engine/Source/Editor/ContentBrowser/Public/ContentBrowserMenuContexts.h"
+    test -f "$content_browser_menu_contexts_file" || fail 'The Content Browser menu contexts header is missing.'
+    content_browser_menu_contexts_sha256="$(shasum -a 256 "$content_browser_menu_contexts_file" | awk '{ print $1 }')"
+    case "$content_browser_menu_contexts_sha256" in
+      "$CONTENT_BROWSER_MENU_CONTEXTS_SHA256_BEFORE")
+        perl -0pi -e 's/::template FindContextWithAssets/::FindContextWithAssets/g' "$content_browser_menu_contexts_file" ||
+          fail 'Could not apply the UE 5.5.4 Content Browser Clang 17 compatibility correction.'
+        content_browser_menu_contexts_patch=applied
+        ;;
+      "$CONTENT_BROWSER_MENU_CONTEXTS_SHA256_AFTER")
+        content_browser_menu_contexts_patch=already-applied
+        ;;
+      *)
+        fail 'The UE 5.5.4 Content Browser menu contexts header does not match the audited compatibility input.'
+        ;;
+    esac
+    test "$(shasum -a 256 "$content_browser_menu_contexts_file" | awk '{ print $1 }')" = "$CONTENT_BROWSER_MENU_CONTEXTS_SHA256_AFTER" ||
+      fail 'The UE 5.5.4 Content Browser Clang 17 compatibility correction failed verification.'
+
     fbx_redblacktree_file="$SOURCE_DIR/Engine/Source/ThirdParty/FBX/2020.2/include/fbxsdk/core/base/fbxredblacktree.h"
     test -f "$fbx_redblacktree_file" || fail 'The FBX red-black tree header is missing.'
     fbx_redblacktree_sha256="$(shasum -a 256 "$fbx_redblacktree_file" | awk '{ print $1 }')"
@@ -257,7 +280,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     build_start="$(date +%s)"
     if ! run_source_command "$build_log" "$build_command" \
       ShaderCompileWorker Mac Development \
-      -MaxParallelActions=2 \
+      "-MaxParallelActions=$BUILD_MAX_PARALLEL_ACTIONS" \
       -CompilerArguments="$BUILD_COMPILER_ARGUMENTS" \
       -NoUBA \
       -NoUBALocal \
@@ -272,7 +295,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     current_phase=build-unreal-editor
     if ! run_source_command "$build_log" "$build_command" \
       UnrealEditor Mac Development \
-      -MaxParallelActions=2 \
+      "-MaxParallelActions=$BUILD_MAX_PARALLEL_ACTIONS" \
       -CompilerArguments="$BUILD_COMPILER_ARGUMENTS" \
       -NoUBA \
       -NoUBALocal \
@@ -334,8 +357,9 @@ disk_after_gib="$(disk_free_gib)"
   echo 'setup_cache=disabled'
   echo 'setup_threads=3'
   printf 'disk_reserve_gib=%s\n' "$DISK_RESERVE_GIB"
-  echo 'build_max_parallel_actions=2'
+  printf 'build_max_parallel_actions=%s\n' "$BUILD_MAX_PARALLEL_ACTIONS"
   printf 'build_compiler_arguments=%s\n' "$BUILD_COMPILER_ARGUMENTS"
+  printf 'content_browser_menu_contexts_patch=%s\n' "$content_browser_menu_contexts_patch"
   printf 'fbx_redblacktree_patch=%s\n' "$fbx_redblacktree_patch"
   printf 'reserve_allocation_seconds=%s\n' "$reserve_seconds"
   printf 'setup_seconds=%s\n' "$setup_seconds"
@@ -362,8 +386,9 @@ disk_after_gib="$(disk_free_gib)"
   printf '| Setup / project generation | `%s s` / `%s s` |\n' "$setup_seconds" "$generate_seconds"
   printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
   echo '| GitDependencies cache / threads | `disabled` / `3` |'
-  printf '| ShaderCompileWorker + editor builds / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
+  printf '| ShaderCompileWorker + editor builds / max parallel actions | `%s s` / `%s` |\n' "$build_seconds" "$BUILD_MAX_PARALLEL_ACTIONS"
   printf '| Compiler compatibility arguments | `%s` |\n' "$BUILD_COMPILER_ARGUMENTS"
+  printf '| Content Browser menu contexts compatibility patch | `%s` |\n' "$content_browser_menu_contexts_patch"
   printf '| FBX red-black tree compatibility patch | `%s` |\n' "$fbx_redblacktree_patch"
   printf '| Editor / ShaderCompileWorker | `%s` / `%s`, `%s bytes` |\n' \
     "$editor_arch" "$shader_worker_arch" "$editor_binary_bytes"
