@@ -13,6 +13,8 @@ output_root="$RUNNER_TEMP/ue5-ios-a8a9-output"
 manifest="$RUNNER_TEMP/ue5-ios-a8a9-merge-manifest.txt"
 
 test "$UE5_VERSION" = "5.5.4"
+test "$(uname -s)" = Darwin
+test "$(uname -m)" = x86_64
 test -d "$IOS_APP_TRANSFER_DIR"
 test ! -L "$IOS_APP_TRANSFER_DIR"
 app_count="$(find "$IOS_APP_TRANSFER_DIR" -mindepth 1 -maxdepth 1 -type d -name '*.app' -print | awk 'END { print NR + 0 }')"
@@ -27,7 +29,10 @@ app_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_
 [[ "$app_executable" =~ ^[A-Za-z0-9._-]+$ ]]
 app_binary="$app/$app_executable"
 test -x "$app_binary"
-printf '%s\n' "$(/usr/bin/lipo -archs "$app_binary")" | grep -Eq '(^|[[:space:]])arm64($|[[:space:]])'
+app_architectures="$(/usr/bin/lipo -archs "$app_binary")"
+test "$app_architectures" = arm64
+app_platform="$(/usr/libexec/PlistBuddy -c 'Print :DTPlatformName' "$info_plist")"
+test "$app_platform" = iphoneos
 test ! -e "$app/embedded.mobileprovision"
 test ! -e "$app/_CodeSignature"
 if /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1; then
@@ -70,6 +75,9 @@ ipa_sha256="$(shasum -a 256 "$ipa" | awk '{ print $1 }')"
   printf 'ue5_version=%s\n' "$UE5_VERSION"
   printf 'app_name=%s\n' "$(basename "$app")"
   printf 'app_executable=%s\n' "$app_executable"
+  printf 'consumer_host_arch=%s\n' "$(uname -m)"
+  printf 'app_platform=%s\n' "$app_platform"
+  printf 'app_architectures=%s\n' "$app_architectures"
   printf 'ipa_name=%s\n' "$(basename "$ipa")"
   printf 'ipa_bytes=%s\n' "$ipa_bytes"
   printf 'ipa_sha256=%s\n' "$ipa_sha256"
@@ -87,6 +95,7 @@ echo "ZEN_UE5_IOS_UNSIGNED_IPA_MERGE_SUCCESS ipa=$ipa sha256=$ipa_sha256"
   echo '| Check | Result |'
   echo '| --- | --- |'
   printf '| Input app | `%s` |\n' "$(basename "$app")"
+  printf '| Intel consumer / payload | `%s` / `%s %s` |\n' "$(uname -m)" "$app_platform" "$app_architectures"
   printf '| IPA | `%s`, `%s bytes`, SHA-256 `%s` |\n' "$(basename "$ipa")" "$ipa_bytes" "$ipa_sha256"
   echo '| Operation | `Payload/.app merge only; no UE build, cook, stage, or package` |'
   echo '| Signing / provisioning | `disabled` / `absent` |'

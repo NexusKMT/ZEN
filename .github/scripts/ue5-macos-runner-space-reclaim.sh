@@ -78,6 +78,10 @@ umask 077
 test "$GITHUB_ACTIONS" = true || fail 'Reclaim is restricted to GitHub Actions.'
 test "$RUNNER_ENVIRONMENT" = github-hosted || fail 'Reclaim is restricted to a GitHub-hosted runner.'
 test "$(uname -s)" = Darwin || fail 'Reclaim is restricted to macOS.'
+test "$(uname -m)" = "${EXPECTED_HOST_ARCH:-x86_64}" || fail 'Reclaim requires the Intel source-build runner.'
+if [[ -n "${RUNNER_ARCH:-}" ]]; then
+  test "$RUNNER_ARCH" = "${EXPECTED_RUNNER_ARCH:-X64}" || fail 'Reclaim requires a GitHub X64 runner.'
+fi
 test "$(id -un)" = runner || fail 'Reclaim requires the ephemeral runner account.'
 case "$RUNNER_TEMP" in
   /Users/runner/work/_temp | /Users/runner/work/_temp/*)

@@ -2,18 +2,22 @@
 
 set -euo pipefail
 
-: "${GHCR_TOKEN:?GHCR_TOKEN is required}"
-: "${GHCR_USERNAME:?GHCR_USERNAME is required}"
+: "${EPIC_SOURCE_TOKEN:?EPIC_SOURCE_TOKEN is required}"
 : "${GITHUB_STEP_SUMMARY:?GITHUB_STEP_SUMMARY is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 
 UE5_VERSION="${UE5_VERSION:-5.5.4}"
 UE5_IMAGE="${UE5_IMAGE:-ghcr.io/epicgames/unreal-engine:dev-${UE5_VERSION}}"
-XCODE_APP="${XCODE_APP:-/Applications/Xcode_15.4.app}"
+XCODE_APP="${XCODE_APP:-/Applications/Xcode_16.4.app}"
+EXPECTED_HOST_ARCH="${EXPECTED_HOST_ARCH:-x86_64}"
+EXPECTED_RUNNER_ARCH="${EXPECTED_RUNNER_ARCH:-X64}"
+EXPECTED_XCODE_VERSION="${EXPECTED_XCODE_VERSION:-16.4}"
+EXPECTED_XCODE_BUILD="${EXPECTED_XCODE_BUILD:-16F6}"
+EXPECTED_IPHONEOS_SDK="${EXPECTED_IPHONEOS_SDK:-18.5}"
 RECLAIM_XCODE_SPACE="${RECLAIM_XCODE_SPACE:-true}"
 PROBE_GHCR_IMAGE="${PROBE_GHCR_IMAGE:-true}"
 SOURCE_BUILD_MIN_CPU="${SOURCE_BUILD_MIN_CPU:-4}"
-SOURCE_BUILD_MIN_MEMORY_GIB="${SOURCE_BUILD_MIN_MEMORY_GIB:-16}"
+SOURCE_BUILD_MIN_MEMORY_GIB="${SOURCE_BUILD_MIN_MEMORY_GIB:-14}"
 SOURCE_BUILD_MIN_DISK_GIB="${SOURCE_BUILD_MIN_DISK_GIB:-150}"
 
 audit_file="$RUNNER_TEMP/ue5-macos-hosted-probe.txt"
@@ -69,6 +73,11 @@ command -v xcrun >/dev/null || fail 'xcrun is unavailable.'
   fail 'RECLAIM_XCODE_SPACE must be true or false.'
 [[ "$PROBE_GHCR_IMAGE" = true || "$PROBE_GHCR_IMAGE" = false ]] ||
   fail 'PROBE_GHCR_IMAGE must be true or false.'
+test "$EXPECTED_HOST_ARCH" = x86_64 || fail 'EXPECTED_HOST_ARCH must be x86_64 for the Intel source path.'
+test "$EXPECTED_RUNNER_ARCH" = X64 || fail 'EXPECTED_RUNNER_ARCH must be X64 for the Intel source path.'
+if [[ -n "${RUNNER_ARCH:-}" ]]; then
+  test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH" || fail 'The GitHub runner architecture is not X64.'
+fi
 
 target_xcode_parent="$(cd "$(dirname "$XCODE_APP")" && pwd -P)"
 target_xcode_name="$(basename "$XCODE_APP")"
@@ -79,6 +88,7 @@ test ! -L "$XCODE_APP" || fail 'XCODE_APP must not be a symbolic link.'
 test -d "$XCODE_APP/Contents/Developer" || fail "Required Xcode is missing: ${XCODE_APP}"
 
 runner_arch="$(uname -m)"
+test "$runner_arch" = "$EXPECTED_HOST_ARCH" || fail "The source path requires ${EXPECTED_HOST_ARCH}; found ${runner_arch}."
 runner_cpu="$(sysctl -n hw.ncpu)"
 runner_memory_bytes="$(sysctl -n hw.memsize)"
 runner_memory_gib="$((runner_memory_bytes / 1024 / 1024 / 1024))"
@@ -94,6 +104,12 @@ test "$selected_developer_dir" = "$XCODE_APP/Contents/Developer" ||
 xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
 xcode_build="$(xcodebuild -version | awk 'NR == 2 { print $3 }')"
 iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+test "$xcode_version" = "$EXPECTED_XCODE_VERSION" ||
+  fail "The selected Xcode version is ${xcode_version}; expected ${EXPECTED_XCODE_VERSION}."
+test "$xcode_build" = "$EXPECTED_XCODE_BUILD" ||
+  fail "The selected Xcode build is ${xcode_build}; expected ${EXPECTED_XCODE_BUILD}."
+test "$iphoneos_sdk" = "$EXPECTED_IPHONEOS_SDK" ||
+  fail "The selected iPhoneOS SDK is ${iphoneos_sdk}; expected ${EXPECTED_IPHONEOS_SDK}."
 iphoneos_clang="$(xcrun --sdk iphoneos --find clang)"
 test -x "$iphoneos_clang" || fail 'The selected iPhoneOS clang is not executable.'
 
@@ -126,8 +142,10 @@ disk_after_kib="$(disk_free_kib)"
 disk_after_gib="$((disk_after_kib / 1024 / 1024))"
 
 ghcr_platforms=not-probed
-ghcr_has_darwin=false
+ghcr_has_darwin=not-probed
 if test "$PROBE_GHCR_IMAGE" = true; then
+  : "${GHCR_TOKEN:?GHCR_TOKEN is required when PROBE_GHCR_IMAGE=true}"
+  : "${GHCR_USERNAME:?GHCR_USERNAME is required when PROBE_GHCR_IMAGE=true}"
   printf 'machine ghcr.io\nlogin %s\npassword %s\n' "$GHCR_USERNAME" "$GHCR_TOKEN" > "$ghcr_netrc"
   chmod 600 "$ghcr_netrc"
 
@@ -221,7 +239,7 @@ fi
   printf 'silent\n'
   printf 'show-error\n'
   printf 'header = "Accept: application/vnd.github+json"\n'
-  printf 'header = "Authorization: Bearer %s"\n' "$GHCR_TOKEN"
+  printf 'header = "Authorization: Bearer %s"\n' "$EPIC_SOURCE_TOKEN"
   printf 'header = "X-GitHub-Api-Version: 2022-11-28"\n'
 } > "$github_curl_config"
 chmod 600 "$github_curl_config"

@@ -10,6 +10,12 @@ set -euo pipefail
 : "${UE5_ROOT:?UE5_ROOT must point to the UE 5.5.4 Engine directory}"
 : "${UE5_VERSION:?UE5_VERSION is required}"
 
+EXPECTED_HOST_ARCH="${EXPECTED_HOST_ARCH:-x86_64}"
+EXPECTED_RUNNER_ARCH="${EXPECTED_RUNNER_ARCH:-X64}"
+EXPECTED_XCODE_VERSION="${EXPECTED_XCODE_VERSION:-16.4}"
+EXPECTED_XCODE_BUILD="${EXPECTED_XCODE_BUILD:-16F6}"
+EXPECTED_IPHONEOS_SDK="${EXPECTED_IPHONEOS_SDK:-18.5}"
+
 project_file="$UE427_PROJECT_DIR/EpicZenGarden.uproject"
 build_version_file="$UE5_ROOT/Build/Build.version"
 uat="$UE5_ROOT/Build/BatchFiles/RunUAT.sh"
@@ -27,6 +33,11 @@ test -f "$build_version_file"
 test -x "$uat"
 command -v jq >/dev/null
 test "$(uname -s)" = Darwin
+host_arch="$(uname -m)"
+test "$host_arch" = "$EXPECTED_HOST_ARCH"
+if [[ -n "${RUNNER_ARCH:-}" ]]; then
+  test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH"
+fi
 test -z "${IOS_CODE_SIGN_IDENTITY:-}" || {
   echo 'IOS_CODE_SIGN_IDENTITY must be empty for an unsigned package.' >&2
   exit 1
@@ -45,9 +56,12 @@ printf '%s\n' "$build_version" | jq --exit-status '
   exit 1
 }
 
-xcodebuild -version
+xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+xcode_build="$(xcodebuild -version | awk 'NR == 2 { print $3 }')"
+test "$xcode_version" = "$EXPECTED_XCODE_VERSION"
+test "$xcode_build" = "$EXPECTED_XCODE_BUILD"
 sdk_version="$(xcrun --sdk iphoneos --show-sdk-version)"
-test -n "$sdk_version"
+test "$sdk_version" = "$EXPECTED_IPHONEOS_SDK"
 xcrun --sdk iphoneos --find clang >/dev/null
 
 chmod -R u+rwX "$UE427_PROJECT_DIR"
@@ -125,7 +139,11 @@ app_executable="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_
 app_binary="$app/$app_executable"
 test -x "$app_binary"
 app_architectures="$(/usr/bin/lipo -archs "$app_binary")"
-printf '%s\n' "$app_architectures" | grep -Eq '(^|[[:space:]])arm64($|[[:space:]])'
+test "$app_architectures" = arm64
+app_platform="$(/usr/libexec/PlistBuddy -c 'Print :DTPlatformName' "$info_plist")"
+test "$app_platform" = iphoneos
+app_sdk_name="$(/usr/libexec/PlistBuddy -c 'Print :DTSDKName' "$info_plist")"
+[[ "$app_sdk_name" == iphoneos* ]]
 test ! -e "$app/embedded.mobileprovision"
 test ! -e "$app/_CodeSignature"
 if /usr/bin/codesign --verify --deep --strict "$app" >/dev/null 2>&1; then
@@ -142,8 +160,14 @@ if [[ "${IOS_APP_ONLY:-false}" == true ]]; then
   [[ "$app_sha256" =~ ^[0-9a-f]{64}$ ]]
   {
     echo 'UE5_IOS_UNSIGNED_APP_SUCCESS'
+    echo 'checkpoint_schema=zen-ios-app-v2'
     printf 'ue5_version=%s\n' "$UE5_VERSION"
-    printf 'sdk_version=%s\n' "$sdk_version"
+    printf 'host_arch=%s\n' "$host_arch"
+    printf 'xcode_version=%s\n' "$xcode_version"
+    printf 'xcode_build=%s\n' "$xcode_build"
+    printf 'iphoneos_sdk=%s\n' "$sdk_version"
+    printf 'app_platform=%s\n' "$app_platform"
+    printf 'app_sdk_name=%s\n' "$app_sdk_name"
     printf 'app_name=%s\n' "$(basename "$app")"
     printf 'app_executable=%s\n' "$app_executable"
     printf 'app_architectures=%s\n' "$app_architectures"
@@ -164,8 +188,9 @@ if [[ "${IOS_APP_ONLY:-false}" == true ]]; then
     echo '| Check | Result |'
     echo '| --- | --- |'
     echo '| Engine | `UE 5.5.4` |'
-    printf '| iPhoneOS SDK | `%s` |\n' "$sdk_version"
-    echo '| Target | `A8 / A8X / A9, arm64` |'
+    printf '| Intel host / Xcode / iPhoneOS SDK | `%s` / `%s (%s)` / `%s` |\n' \
+      "$host_arch" "$xcode_version" "$xcode_build" "$sdk_version"
+    printf '| Target | `A8 / A8X / A9, %s, %s` |\n' "$app_platform" "$app_architectures"
     echo '| Signing / provisioning | `disabled` / `absent` |'
     printf '| App bundle | `%s`, `%s bytes`, manifest SHA-256 `%s` |\n' "$(basename "$app")" "$app_bytes" "$app_sha256"
     echo '| Reusable transfer | `private rclone; IPA merge intentionally deferred` |'

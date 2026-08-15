@@ -265,11 +265,18 @@ licensed content stay on its runner.
 
 The expensive UE 5.5.4 source bootstrap, editor build, cook, stage, and
 unsigned `.app` production are isolated in `ue5-ios-app-producer.yml`. The
-producer runs on the GitHub-hosted Apple Silicon `macos-14` label, downloads a
-clean UE 4.27 project transfer, validates exactly one unsigned arm64 app bundle,
-packs it as one tar checkpoint, uploads it to the authorized private rclone
-remote, and reads the tar back for a byte-for-byte SHA-256 check. The licensed
-app is never published as a GitHub artifact.
+producer runs on the GitHub-hosted Intel `macos-15-intel` label and requires a
+native `x86_64` host, Xcode 16.4 build 16F6, and the iPhoneOS 18.5 SDK. It
+checks out the exact licensed UE 5.5.4 source tag with the configured PAT. The
+source-access preflight receives that PAT as `EPIC_SOURCE_TOKEN`; the unrelated
+GHCR container-manifest probe and its registry credentials are disabled and
+cannot block this source-build path. After building native Intel UnrealEditor and
+ShaderCompileWorker host tools, it downloads a clean UE 4.27 project transfer,
+validates exactly one unsigned, thin `iphoneos` arm64 app bundle, packs it as
+one tar checkpoint, uploads it to the authorized private rclone remote, and
+reads both the tar and checkpoint manifest back for byte-for-byte verification.
+The licensed app is never published as a GitHub artifact, and no macOS ARM host
+binary is transferred between runners.
 
 Choose a new lowercase immutable checkpoint key and start the producer after a
 clean UE 4.27 transfer succeeds:
@@ -284,10 +291,11 @@ gh workflow run ue5-ios-app-producer.yml \
 
 The final IPA-only boundary is `ue5-ios-a8a9-package.yml`. It runs on
 `macos-15-intel`, downloads and verifies the reusable app checkpoint, confirms
-that the app is unsigned arm64 content, wraps it below `Payload/`, and uploads
-the resulting unsigned IPA to the private rclone output namespace. It does not
-check out Unreal Engine source, select Xcode, require an iPhoneOS SDK, or repeat
-build, cook, stage, or package work.
+that both producer and consumer hosts are `x86_64` and that the app is unsigned,
+thin `iphoneos` arm64 content produced with the pinned Xcode/SDK, wraps it below
+`Payload/`, and uploads the resulting unsigned IPA to the private rclone output
+namespace. It does not check out Unreal Engine source, select Xcode, require an
+iPhoneOS SDK locally, or repeat build, cook, stage, or package work.
 
 Reuse a completed app checkpoint with:
 

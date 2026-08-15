@@ -11,6 +11,12 @@ set -euo pipefail
 SOURCE_DIR="${SOURCE_DIR:-$GITHUB_WORKSPACE/ue5-source}"
 SETUP_EXCLUDES="${SETUP_EXCLUDES:-Android,Linux,LinuxArm64,Win32,Win64,HoloLens,TVOS}"
 DISK_RESERVE_GIB="${DISK_RESERVE_GIB:-12}"
+XCODE_APP="${XCODE_APP:?XCODE_APP is required for the Intel source path}"
+EXPECTED_HOST_ARCH="${EXPECTED_HOST_ARCH:-x86_64}"
+EXPECTED_RUNNER_ARCH="${EXPECTED_RUNNER_ARCH:-X64}"
+EXPECTED_XCODE_VERSION="${EXPECTED_XCODE_VERSION:-16.4}"
+EXPECTED_XCODE_BUILD="${EXPECTED_XCODE_BUILD:-16F6}"
+EXPECTED_IPHONEOS_SDK="${EXPECTED_IPHONEOS_SDK:-18.5}"
 audit_file="$RUNNER_TEMP/ue5-macos-source-bootstrap.txt"
 setup_log="$RUNNER_TEMP/ue5-macos-source-setup.log"
 generate_log="$RUNNER_TEMP/ue5-macos-source-generate.log"
@@ -98,9 +104,34 @@ case "$BOOTSTRAP_STAGE" in
 esac
 
 test "$(uname -s)" = Darwin || fail 'This bootstrap must run on macOS.'
+test "$EXPECTED_HOST_ARCH" = x86_64 || fail 'EXPECTED_HOST_ARCH must be x86_64 for the Intel source path.'
+test "$EXPECTED_RUNNER_ARCH" = X64 || fail 'EXPECTED_RUNNER_ARCH must be X64 for the Intel source path.'
+host_arch="$(uname -m)"
+test "$host_arch" = "$EXPECTED_HOST_ARCH" || fail "The source path requires ${EXPECTED_HOST_ARCH}; found ${host_arch}."
+if [[ -n "${RUNNER_ARCH:-}" ]]; then
+  test "$RUNNER_ARCH" = "$EXPECTED_RUNNER_ARCH" || fail 'The GitHub runner architecture is not X64.'
+fi
 command -v git >/dev/null || fail 'git is unavailable.'
 command -v jq >/dev/null || fail 'jq is unavailable.'
 command -v mkfile >/dev/null || fail 'mkfile is unavailable.'
+command -v xcodebuild >/dev/null || fail 'xcodebuild is unavailable.'
+command -v xcode-select >/dev/null || fail 'xcode-select is unavailable.'
+command -v xcrun >/dev/null || fail 'xcrun is unavailable.'
+command -v lipo >/dev/null || fail 'lipo is unavailable.'
+test -d "$XCODE_APP/Contents/Developer" || fail "Required Xcode is missing: ${XCODE_APP}"
+sudo xcode-select --switch "$XCODE_APP/Contents/Developer" ||
+  fail 'Could not select the required Xcode developer directory.'
+test "$(xcode-select -p)" = "$XCODE_APP/Contents/Developer" ||
+  fail 'xcode-select did not retain the requested developer directory.'
+xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+xcode_build="$(xcodebuild -version | awk 'NR == 2 { print $3 }')"
+iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
+test "$xcode_version" = "$EXPECTED_XCODE_VERSION" ||
+  fail "The selected Xcode version is ${xcode_version}; expected ${EXPECTED_XCODE_VERSION}."
+test "$xcode_build" = "$EXPECTED_XCODE_BUILD" ||
+  fail "The selected Xcode build is ${xcode_build}; expected ${EXPECTED_XCODE_BUILD}."
+test "$iphoneos_sdk" = "$EXPECTED_IPHONEOS_SDK" ||
+  fail "The selected iPhoneOS SDK is ${iphoneos_sdk}; expected ${EXPECTED_IPHONEOS_SDK}."
 test -d "$SOURCE_DIR/.git" || fail 'The Unreal Engine source checkout is missing.'
 
 build_version_file="$SOURCE_DIR/Engine/Build/Build.version"
@@ -151,6 +182,7 @@ workspace_count=0
 tracked_changes_after=false
 build_seconds=0
 editor_arch=not-built
+shader_worker_arch=not-built
 editor_binary_bytes=0
 
 if test "$BOOTSTRAP_STAGE" != checkout; then
@@ -218,14 +250,14 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     shader_worker="$SOURCE_DIR/Engine/Binaries/Mac/ShaderCompileWorker"
     test -x "$editor_binary" || fail 'The source build did not produce an executable UnrealEditor.'
     test -x "$shader_worker" || fail 'The source build did not produce an executable ShaderCompileWorker.'
-    editor_file_info="$(file "$editor_binary")"
-    if printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable arm64'; then
-      editor_arch=arm64
-    elif printf '%s\n' "$editor_file_info" | grep -Eq 'Mach-O 64-bit executable x86_64'; then
-      editor_arch=x86_64
-    else
-      fail 'The UnrealEditor binary is not a native arm64 or x86_64 Mach-O executable.'
-    fi
+    editor_arch="$(lipo -archs "$editor_binary" 2>/dev/null)" ||
+      fail 'Could not inspect the UnrealEditor Mach-O architecture.'
+    test "$editor_arch" = "$EXPECTED_HOST_ARCH" ||
+      fail "The UnrealEditor binary architecture is ${editor_arch}; expected ${EXPECTED_HOST_ARCH}."
+    shader_worker_arch="$(lipo -archs "$shader_worker" 2>/dev/null)" ||
+      fail 'Could not inspect the ShaderCompileWorker Mach-O architecture.'
+    test "$shader_worker_arch" = "$EXPECTED_HOST_ARCH" ||
+      fail "The ShaderCompileWorker architecture is ${shader_worker_arch}; expected ${EXPECTED_HOST_ARCH}."
     editor_binary_bytes="$(stat -f '%z' "$editor_binary")"
     [[ "$editor_binary_bytes" =~ ^[0-9]+$ ]] || fail 'Could not measure the UnrealEditor binary.'
   fi
@@ -247,6 +279,11 @@ disk_after_gib="$(disk_free_gib)"
   printf 'stage=%s\n' "$BOOTSTRAP_STAGE"
   printf 'ue5_version=%s\n' "$UE5_VERSION"
   printf 'source_sha=%s\n' "$source_sha"
+  printf 'host_arch=%s\n' "$host_arch"
+  printf 'xcode_app=%s\n' "$XCODE_APP"
+  printf 'xcode_version=%s\n' "$xcode_version"
+  printf 'xcode_build=%s\n' "$xcode_build"
+  printf 'iphoneos_sdk=%s\n' "$iphoneos_sdk"
   printf 'disk_free_before_gib=%s\n' "$disk_before_gib"
   printf 'disk_free_after_gib=%s\n' "$disk_after_gib"
   printf 'source_checkout_mib=%s\n' "$source_checkout_mib"
@@ -263,6 +300,7 @@ disk_after_gib="$(disk_free_gib)"
   printf 'build_seconds=%s\n' "$build_seconds"
   printf 'workspace_count=%s\n' "$workspace_count"
   printf 'editor_arch=%s\n' "$editor_arch"
+  printf 'shader_worker_arch=%s\n' "$shader_worker_arch"
   printf 'editor_binary_bytes=%s\n' "$editor_binary_bytes"
   printf 'tracked_changes_after=%s\n' "$tracked_changes_after"
 } > "$audit_file"
@@ -274,13 +312,16 @@ disk_after_gib="$(disk_free_gib)"
   echo '| --- | --- |'
   printf '| Stage | `%s` |\n' "$BOOTSTRAP_STAGE"
   printf '| Exact source | `UE %s` at `%s` |\n' "$UE5_VERSION" "$source_sha"
+  printf '| Host / Xcode / iPhoneOS SDK | `%s` / `%s %s (%s)` / `%s` |\n' \
+    "$host_arch" "$xcode_version" "$xcode_build" "$XCODE_APP" "$iphoneos_sdk"
   printf '| Source size checkout / post-setup / final | `%s MiB` / `%s MiB` / `%s MiB` |\n' \
     "$source_checkout_mib" "$source_after_setup_mib" "$source_final_mib"
   printf '| Setup / project generation | `%s s` / `%s s` |\n' "$setup_seconds" "$generate_seconds"
   printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
   echo '| GitDependencies cache / threads | `disabled` / `3` |'
   printf '| Editor build / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
-  printf '| Editor binary | `%s`, `%s bytes` |\n' "$editor_arch" "$editor_binary_bytes"
+  printf '| Editor / ShaderCompileWorker | `%s` / `%s`, `%s bytes` |\n' \
+    "$editor_arch" "$shader_worker_arch" "$editor_binary_bytes"
   printf '| Emergency disk reserve | `%s GiB` |\n' "$DISK_RESERVE_GIB"
   printf '| Generated Xcode workspaces | `%s` |\n' "$workspace_count"
   printf '| Free disk before / after | `%s GiB` / `%s GiB` |\n' "$disk_before_gib" "$disk_after_gib"

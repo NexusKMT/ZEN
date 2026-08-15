@@ -33,14 +33,18 @@ concurrency:
 
 env:
   UE5_VERSION: "5.5.4"
-  UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
   UE5_ROOT: ${{ github.workspace }}/ue5-source/Engine
-  XCODE_APP: /Applications/Xcode_15.4.app
+  EXPECTED_HOST_ARCH: x86_64
+  EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_XCODE_VERSION: "16.4"
+  EXPECTED_XCODE_BUILD: 16F6
+  EXPECTED_IPHONEOS_SDK: "18.5"
+  XCODE_APP: /Applications/Xcode_16.4.app
 
 jobs:
   bootstrap:
     name: Bootstrap and optionally build exact UE source
-    runs-on: macos-14
+    runs-on: macos-15-intel
     timeout-minutes: 360
 
     steps:
@@ -50,8 +54,8 @@ jobs:
       - name: Revalidate hosted macOS prerequisites
         shell: bash
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USERNAME: ${{ github.repository_owner }}
+          EPIC_SOURCE_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          PROBE_GHCR_IMAGE: false
           RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 

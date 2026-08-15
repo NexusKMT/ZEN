@@ -93,6 +93,8 @@ if [[ "$direction" == upload ]]; then
   test -f "$manifest_source" || fail 'The producer app manifest is missing.'
   grep -Fqx 'UE5_IOS_UNSIGNED_APP_SUCCESS' "$manifest_source" ||
     fail 'The producer app manifest does not contain the unsigned app success marker.'
+  grep -Fqx 'checkpoint_schema=zen-ios-app-v2' "$manifest_source" ||
+    fail 'The producer app manifest does not use the Intel checkpoint schema.'
   grep -Fqx 'code_signing=disabled' "$manifest_source" ||
     fail 'The producer app manifest does not confirm signing is disabled.'
   grep -Fqx 'embedded_mobileprovision=absent' "$manifest_source" ||
@@ -104,7 +106,7 @@ if [[ "$direction" == upload ]]; then
     grep -Fqx "ue5_version=$expected_version" "$manifest_source" ||
       fail 'The producer app manifest UE version does not match the producer expectation.'
   fi
-  for manifest_key in ue5_version app_name app_bytes app_sha256; do
+  for manifest_key in checkpoint_schema ue5_version host_arch xcode_version xcode_build iphoneos_sdk app_platform app_sdk_name app_name app_executable app_architectures app_bytes app_sha256; do
     manifest_key_count="$(awk -F= -v key="$manifest_key" '$1 == key { count++ } END { print count + 0 }' "$manifest_source")"
     test "$manifest_key_count" = 1 ||
       fail "The producer app manifest must contain exactly one ${manifest_key} field."
@@ -115,6 +117,23 @@ if [[ "$direction" == upload ]]; then
     fail 'The producer app manifest byte count does not match the app bundle.'
   grep -Fqx "app_sha256=$app_sha256" "$manifest_source" ||
     fail 'The producer app manifest hash does not match the app bundle.'
+  expected_host_arch="${EXPECTED_PRODUCER_HOST_ARCH:-x86_64}"
+  expected_xcode_version="${EXPECTED_PRODUCER_XCODE_VERSION:-16.4}"
+  expected_xcode_build="${EXPECTED_PRODUCER_XCODE_BUILD:-16F6}"
+  expected_iphoneos_sdk="${EXPECTED_PRODUCER_IPHONEOS_SDK:-18.5}"
+  test "$(uname -m)" = "$expected_host_arch" || fail 'The producer runner architecture is unexpected.'
+  grep -Fqx "host_arch=$expected_host_arch" "$manifest_source" ||
+    fail 'The producer app manifest host architecture is unexpected.'
+  grep -Fqx "xcode_version=$expected_xcode_version" "$manifest_source" ||
+    fail 'The producer app manifest Xcode version is unexpected.'
+  grep -Fqx "xcode_build=$expected_xcode_build" "$manifest_source" ||
+    fail 'The producer app manifest Xcode build is unexpected.'
+  grep -Fqx "iphoneos_sdk=$expected_iphoneos_sdk" "$manifest_source" ||
+    fail 'The producer app manifest iPhoneOS SDK is unexpected.'
+  grep -Fqx 'app_platform=iphoneos' "$manifest_source" ||
+    fail 'The producer app manifest does not identify an iPhoneOS app.'
+  grep -Fqx 'app_architectures=arm64' "$manifest_source" ||
+    fail 'The producer app manifest does not identify a thin arm64 app.'
   if grep -Eq '^(producer_commit|producer_host_arch|archive_sha256)=' "$manifest_source"; then
     fail 'The producer app manifest already contains checkpoint transport fields.'
   fi
@@ -148,13 +167,15 @@ else
   "$RCLONE_BIN" copyto "$manifest_remote" "$manifest_target" "${rclone_args[@]}" ||
     fail 'The iOS app checkpoint manifest download failed.'
   test -s "$manifest_target" || fail 'The downloaded iOS app checkpoint manifest is empty.'
-  for manifest_key in ue5_version app_name app_bytes app_sha256 producer_commit producer_host_arch archive_sha256; do
+  for manifest_key in checkpoint_schema ue5_version host_arch xcode_version xcode_build iphoneos_sdk app_platform app_sdk_name app_name app_executable app_architectures app_bytes app_sha256 producer_commit producer_host_arch archive_sha256; do
     manifest_key_count="$(awk -F= -v key="$manifest_key" '$1 == key { count++ } END { print count + 0 }' "$manifest_target")"
     test "$manifest_key_count" = 1 ||
       fail "The checkpoint manifest must contain exactly one ${manifest_key} field."
   done
   expected_version="${EXPECTED_UE5_VERSION:-}"
   expected_commit="${EXPECTED_PRODUCER_COMMIT:-}"
+  grep -Fqx 'checkpoint_schema=zen-ios-app-v2' "$manifest_target" ||
+    fail 'The iOS app checkpoint does not use the Intel checkpoint schema.'
   if [[ -n "$expected_version" ]]; then
     grep -Fqx "ue5_version=$expected_version" "$manifest_target" ||
       fail 'The iOS app checkpoint UE version does not match the consumer expectation.'
@@ -163,12 +184,29 @@ else
     grep -Fqx "producer_commit=$expected_commit" "$manifest_target" ||
       fail 'The iOS app checkpoint producer commit does not match the consumer expectation.'
   fi
+  expected_producer_host_arch="${EXPECTED_PRODUCER_HOST_ARCH:-x86_64}"
+  expected_consumer_host_arch="${EXPECTED_CONSUMER_HOST_ARCH:-x86_64}"
+  expected_xcode_version="${EXPECTED_PRODUCER_XCODE_VERSION:-16.4}"
+  expected_xcode_build="${EXPECTED_PRODUCER_XCODE_BUILD:-16F6}"
+  expected_iphoneos_sdk="${EXPECTED_PRODUCER_IPHONEOS_SDK:-18.5}"
+  grep -Fqx "host_arch=$expected_producer_host_arch" "$manifest_target" ||
+    fail 'The iOS app checkpoint was not produced on the required Intel host.'
   producer_host_arch="$(awk -F= '$1 == "producer_host_arch" { print $2; exit }' "$manifest_target")"
-  [[ "$producer_host_arch" == arm64 || "$producer_host_arch" == x86_64 ]] ||
-    fail 'The iOS app checkpoint producer host architecture is invalid.'
+  test "$producer_host_arch" = "$expected_producer_host_arch" ||
+    fail 'The checkpoint producer host architecture does not match its app manifest.'
+  grep -Fqx "xcode_version=$expected_xcode_version" "$manifest_target" ||
+    fail 'The iOS app checkpoint Xcode version is unexpected.'
+  grep -Fqx "xcode_build=$expected_xcode_build" "$manifest_target" ||
+    fail 'The iOS app checkpoint Xcode build is unexpected.'
+  grep -Fqx "iphoneos_sdk=$expected_iphoneos_sdk" "$manifest_target" ||
+    fail 'The iOS app checkpoint iPhoneOS SDK is unexpected.'
+  grep -Fqx 'app_platform=iphoneos' "$manifest_target" ||
+    fail 'The iOS app checkpoint is not an iPhoneOS app.'
+  grep -Fqx 'app_architectures=arm64' "$manifest_target" ||
+    fail 'The iOS app checkpoint is not a thin arm64 app.'
   consumer_host_arch="$(uname -m)"
-  [[ "$consumer_host_arch" == arm64 || "$consumer_host_arch" == x86_64 ]] ||
-    fail 'The consumer host architecture is unsupported.'
+  test "$consumer_host_arch" = "$expected_consumer_host_arch" ||
+    fail 'The consumer host architecture is unexpected.'
   "$RCLONE_BIN" copyto "$archive_remote" "$download_archive" "${rclone_args[@]}" ||
     fail 'The private iOS app archive download failed; the remote name is intentionally suppressed.'
   archive_listing="$config_dir/archive-listing.txt"
@@ -207,6 +245,9 @@ fi
   printf 'app_name=%s\n' "$app_name"
   printf 'app_bytes=%s\n' "$app_bytes"
   printf 'app_sha256=%s\n' "$app_sha256"
+  printf 'host_arch=%s\n' "$(uname -m)"
+  echo 'app_platform=iphoneos'
+  echo 'app_architectures=arm64'
   echo 'verification=byte-for-byte-download'
   echo 'public_binary_artifact=disabled'
 } > "$audit_file"
@@ -222,6 +263,7 @@ printf 'IOS_APP_TRANSFER_DIR=%s\n' "$local_dir" >> "$GITHUB_ENV"
   echo '| --- | --- |'
   printf '| Direction / key | `%s` / `%s` |\n' "$direction" "$transfer_key"
   printf '| App | `%s`, `%s bytes`, manifest SHA-256 `%s` |\n' "$app_name" "$app_bytes" "$app_sha256"
+  printf '| Host / payload architecture | `%s` / `iphoneos arm64` |\n' "$(uname -m)"
   echo '| Verification | `byte-for-byte rclone download check` |'
   echo '| IPA merge | `deferred to consumer workflow` |'
 } >> "$GITHUB_STEP_SUMMARY"

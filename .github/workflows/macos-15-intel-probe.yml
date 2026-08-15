@@ -6,6 +6,12 @@ on:
 permissions:
   contents: read
 
+env:
+  XCODE_APP: /Applications/Xcode_16.4.app
+  EXPECTED_XCODE_VERSION: "16.4"
+  EXPECTED_XCODE_BUILD: 16F6
+  EXPECTED_IPHONEOS_SDK: "18.5"
+
 jobs:
   probe:
     name: Allocate and inspect macos-15-intel
@@ -18,6 +24,10 @@ jobs:
         run: |
           set -euo pipefail
 
+          test -d "$XCODE_APP/Contents/Developer"
+          sudo xcode-select --switch "$XCODE_APP/Contents/Developer"
+          test "$(xcode-select -p)" = "$XCODE_APP/Contents/Developer"
+
           machine_arch="$(uname -m)"
           physical_cpu="$(sysctl -n hw.physicalcpu)"
           logical_cpu="$(sysctl -n hw.logicalcpu)"
@@ -25,6 +35,9 @@ jobs:
           memory_gib="$(awk -v bytes="$memory_bytes" 'BEGIN { printf "%.1f", bytes / 1024 / 1024 / 1024 }')"
           macos_version="$(sw_vers -productVersion)"
           xcode_version="$(xcodebuild -version | paste -sd ' ' -)"
+          selected_xcode_version="$(xcodebuild -version | awk 'NR == 1 { print $2 }')"
+          selected_xcode_build="$(xcodebuild -version | awk 'NR == 2 { print $3 }')"
+          iphoneos_sdk="$(xcrun --sdk iphoneos --show-sdk-version)"
           disk_total="$(df -h / | awk 'NR == 2 { print $2 }')"
           disk_available="$(df -h / | awk 'NR == 2 { print $4 }')"
 
@@ -44,7 +57,12 @@ jobs:
             echo "| Memory | ${memory_gib} GiB |"
             echo "| Root disk | $disk_total total, $disk_available available |"
             echo "| Xcode | $xcode_version |"
+            echo "| Xcode app | $XCODE_APP |"
+            echo "| iPhoneOS SDK | $iphoneos_sdk |"
           } | tee "$GITHUB_STEP_SUMMARY"
 
           test "${RUNNER_ARCH:-}" = "X64"
           test "$machine_arch" = "x86_64"
+          test "$selected_xcode_version" = "$EXPECTED_XCODE_VERSION"
+          test "$selected_xcode_build" = "$EXPECTED_XCODE_BUILD"
+          test "$iphoneos_sdk" = "$EXPECTED_IPHONEOS_SDK"

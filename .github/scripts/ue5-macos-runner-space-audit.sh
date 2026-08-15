@@ -51,6 +51,7 @@ umask 077
 : > "$rows_file"
 
 test "$(uname -s)" = Darwin
+test "$(uname -m)" = "${EXPECTED_HOST_ARCH:-x86_64}"
 test -d "$XCODE_APP/Contents/Developer"
 
 echo 'UE5_MACOS_RUNNER_SPACE_AUDIT_SUCCESS' >> "$audit_file"
@@ -64,7 +65,7 @@ measure_path runner_core_simulator /Users/runner/Library/Developer/CoreSimulator
 measure_path system_core_simulator /Library/Developer/CoreSimulator
 measure_path rustup /Users/runner/.rustup
 measure_path cargo /Users/runner/.cargo
-measure_path homebrew /opt/homebrew
+measure_path homebrew /usr/local/Homebrew
 measure_path usr_local /usr/local
 measure_path google_chrome '/Applications/Google Chrome.app'
 measure_path microsoft_edge '/Applications/Microsoft Edge.app'

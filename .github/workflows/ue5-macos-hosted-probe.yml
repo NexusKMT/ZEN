@@ -13,6 +13,11 @@ on:
         required: true
         type: boolean
         default: false
+      probe_ghcr_image:
+        description: Opt in to the unrelated licensed container manifest inspection
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -24,12 +29,17 @@ concurrency:
 env:
   UE5_VERSION: "5.5.4"
   UE5_IMAGE: ghcr.io/epicgames/unreal-engine:dev-5.5.4
-  XCODE_APP: /Applications/Xcode_15.4.app
+  EXPECTED_HOST_ARCH: x86_64
+  EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_XCODE_VERSION: "16.4"
+  EXPECTED_XCODE_BUILD: 16F6
+  EXPECTED_IPHONEOS_SDK: "18.5"
+  XCODE_APP: /Applications/Xcode_16.4.app
 
 jobs:
   probe:
-    name: Inspect Xcode, GHCR, and Epic source access
-    runs-on: macos-14
+    name: Inspect Intel Xcode, optional GHCR, and Epic source access
+    runs-on: macos-15-intel
     timeout-minutes: 45
 
     steps:
@@ -39,8 +49,10 @@ jobs:
       - name: Run the hosted macOS feasibility probe
         shell: bash
         env:
+          EPIC_SOURCE_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
           GHCR_USERNAME: ${{ github.repository_owner }}
+          PROBE_GHCR_IMAGE: ${{ inputs.probe_ghcr_image }}
           RECLAIM_XCODE_SPACE: ${{ inputs.reclaim_xcode_space }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
 

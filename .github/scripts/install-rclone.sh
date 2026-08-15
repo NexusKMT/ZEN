@@ -68,6 +68,26 @@ fi
 rclone_candidate="$(find "$tool_dir/unpacked" -type f -name rclone -print -quit)"
 
 install -m 0755 "$rclone_candidate" "$bin_dir/rclone"
+if test "$(uname -s)" = Darwin; then
+  rclone_arches="$(/usr/bin/lipo -archs "$bin_dir/rclone" 2>/dev/null)" || {
+    echo 'Could not inspect the installed rclone Mach-O architecture.' >&2
+    exit 1
+  }
+  case "$archive_platform" in
+    osx-amd64)
+      test "$rclone_arches" = x86_64 || {
+        echo "The installed Intel rclone architecture is unexpected: ${rclone_arches}" >&2
+        exit 1
+      }
+      ;;
+    osx-arm64)
+      test "$rclone_arches" = arm64 || {
+        echo "The installed Apple Silicon rclone architecture is unexpected: ${rclone_arches}" >&2
+        exit 1
+      }
+      ;;
+  esac
+fi
 version_line="$("$bin_dir/rclone" version | sed -n '1p')"
 if [[ "$version_line" != "rclone v${RCLONE_RELEASE_INPUT}" ]]; then
   echo "The installed rclone version is unexpected: ${version_line}" >&2

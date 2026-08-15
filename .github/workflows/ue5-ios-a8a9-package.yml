@@ -29,7 +29,11 @@ env:
   RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
   RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
-  RCLONE_OSX_ARM64_BUNDLE_SHA256: 35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8
+  EXPECTED_HOST_ARCH: x86_64
+  EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_PRODUCER_XCODE_VERSION: "16.4"
+  EXPECTED_PRODUCER_XCODE_BUILD: 16F6
+  EXPECTED_PRODUCER_IPHONEOS_SDK: "18.5"
   UE5_VERSION: "5.5.4"
 
 jobs:
@@ -47,7 +51,8 @@ jobs:
         run: |
           set -euo pipefail
           test "$(uname -s)" = Darwin
-          test "$(uname -m)" = x86_64
+          test "${RUNNER_ARCH:-}" = "$EXPECTED_RUNNER_ARCH"
+          test "$(uname -m)" = "$EXPECTED_HOST_ARCH"
           test -x /usr/libexec/PlistBuddy
           for merge_tool in /usr/bin/codesign /usr/bin/ditto /usr/bin/lipo; do
             test -x "$merge_tool"
@@ -62,7 +67,6 @@ jobs:
           version: ${{ env.RCLONE_RELEASE }}
           bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
           osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
-          osx-arm64-bundle-sha256: ${{ env.RCLONE_OSX_ARM64_BUNDLE_SHA256 }}
 
       - name: Download and verify the reusable unsigned app
         shell: bash
@@ -70,6 +74,11 @@ jobs:
           RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
           EXPECTED_UE5_VERSION: ${{ env.UE5_VERSION }}
           EXPECTED_PRODUCER_COMMIT: ${{ inputs.expected_producer_commit }}
+          EXPECTED_PRODUCER_HOST_ARCH: ${{ env.EXPECTED_HOST_ARCH }}
+          EXPECTED_CONSUMER_HOST_ARCH: ${{ env.EXPECTED_HOST_ARCH }}
+          EXPECTED_PRODUCER_XCODE_VERSION: ${{ env.EXPECTED_PRODUCER_XCODE_VERSION }}
+          EXPECTED_PRODUCER_XCODE_BUILD: ${{ env.EXPECTED_PRODUCER_XCODE_BUILD }}
+          EXPECTED_PRODUCER_IPHONEOS_SDK: ${{ env.EXPECTED_PRODUCER_IPHONEOS_SDK }}
           APP_TRANSFER_STAGE: ${{ inputs.app_transfer_stage }}
           APP_TRANSFER_KEY: ${{ inputs.app_transfer_key }}
         run: |

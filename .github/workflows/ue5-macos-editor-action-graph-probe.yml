@@ -18,13 +18,17 @@ concurrency:
 
 env:
   UE5_VERSION: "5.5.4"
+  EXPECTED_HOST_ARCH: x86_64
+  EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_XCODE_VERSION: "16.4"
+  EXPECTED_XCODE_BUILD: 16F6
+  EXPECTED_IPHONEOS_SDK: "18.5"
   XCODE_APP: /Applications/Xcode_16.4.app
   PROJECT_ROOT_NAME: EpicZenGarden
   UE427_TRANSFER_STAGE: ue427-clean
   RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
   RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
-  RCLONE_OSX_ARM64_BUNDLE_SHA256: 35e8f2a666ce789b29111db0dd843ddabc0d59c6b609d07bcaae5d1a07cba6f8
 
 jobs:
   probe:
@@ -39,8 +43,7 @@ jobs:
       - name: Revalidate hosted macOS prerequisites
         shell: bash
         env:
-          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
-          GHCR_USERNAME: ${{ github.repository_owner }}
+          EPIC_SOURCE_TOKEN: ${{ secrets.GHCR_TOKEN }}
           PROBE_GHCR_IMAGE: false
           RECLAIM_XCODE_SPACE: false
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-hosted-probe.sh"
@@ -74,7 +77,6 @@ jobs:
           version: ${{ env.RCLONE_RELEASE }}
           bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
           osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
-          osx-arm64-bundle-sha256: ${{ env.RCLONE_OSX_ARM64_BUNDLE_SHA256 }}
 
       - name: Download the clean UE 4.27 project
         shell: bash
