@@ -32,9 +32,12 @@ concurrency:
 
 env:
   UE5_VERSION: "5.5.4"
+  UE5_SOURCE_SHA: 2d53fcab0066b1f16dd956b227720841cad0f6f7
   UE5_ROOT: ${{ github.workspace }}/ue5-source/Engine
+  SETUP_EXCLUDES: Android,Linux,LinuxArm64,Win32,Win64,HoloLens,TVOS
   EXPECTED_HOST_ARCH: x86_64
   EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_MACOS_MAJOR: "15"
   EXPECTED_XCODE_VERSION: "16.4"
   EXPECTED_XCODE_BUILD: 16F6
   EXPECTED_IPHONEOS_SDK: "18.5"
@@ -42,6 +45,7 @@ env:
   PROJECT_ROOT_NAME: EpicZenGarden
   UE427_TRANSFER_STAGE: ue427-clean
   IOS_APP_TRANSFER_STAGE: ios-app
+  ENGINE_CHECKPOINT_STAGE: ue5-macos-prepared
   RCLONE_RELEASE: "1.75.0"
   RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
   RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
@@ -69,24 +73,9 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-runner-space-reclaim.sh"
 
-      - name: Check out exact licensed UE 5.5.4 source
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-        with:
-          repository: EpicGames/UnrealEngine
-          ref: 5.5.4-release
-          token: ${{ secrets.GHCR_TOKEN }}
-          path: ue5-source
-          fetch-depth: 1
-          fetch-tags: false
-          lfs: false
-          submodules: false
-          persist-credentials: false
-
-      - name: Bootstrap and build exact UE source
+      - name: Compute the immutable Engine checkpoint key
         shell: bash
-        env:
-          BOOTSTRAP_STAGE: build
-        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-source-bootstrap.sh"
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-engine-checkpoint-key.sh"
 
       - name: Install pinned rclone
         uses: ./.github/actions/setup-rclone
@@ -94,6 +83,15 @@ jobs:
           version: ${{ env.RCLONE_RELEASE }}
           bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
           osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
+
+      - name: Download, verify, and smoke-test the prepared Engine
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-ue5-engine-transfer.sh" \
+            download "$GITHUB_WORKSPACE/ue5-source" "$ENGINE_CHECKPOINT_STAGE" "$ENGINE_CHECKPOINT_KEY"
 
       - name: Download the clean UE 4.27 project
         shell: bash
@@ -145,7 +143,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ue5-macos-hosted-probe.txt
             ${{ runner.temp }}/ue5-macos-runner-space-reclaim.txt
-            ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
+            ${{ runner.temp }}/ue5-macos-engine-checkpoint-transfer.txt
             ${{ runner.temp }}/ue5-ios-a8a9-uat.log
             ${{ runner.temp }}/ue5-ios-a8a9-app-manifest.txt
             ${{ runner.temp }}/ue5-ios-app-private-transfer.txt

@@ -23,6 +23,11 @@ on:
         required: true
         type: boolean
         default: true
+      publish_engine_checkpoint:
+        description: Probe and publish the complete prepared UE Engine to the private immutable rclone checkpoint
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -33,13 +38,20 @@ concurrency:
 
 env:
   UE5_VERSION: "5.5.4"
+  UE5_SOURCE_SHA: 2d53fcab0066b1f16dd956b227720841cad0f6f7
   UE5_ROOT: ${{ github.workspace }}/ue5-source/Engine
+  SETUP_EXCLUDES: Android,Linux,LinuxArm64,Win32,Win64,HoloLens,TVOS
   EXPECTED_HOST_ARCH: x86_64
   EXPECTED_RUNNER_ARCH: X64
+  EXPECTED_MACOS_MAJOR: "15"
   EXPECTED_XCODE_VERSION: "16.4"
   EXPECTED_XCODE_BUILD: 16F6
   EXPECTED_IPHONEOS_SDK: "18.5"
   XCODE_APP: /Applications/Xcode_16.4.app
+  ENGINE_CHECKPOINT_STAGE: ue5-macos-prepared
+  RCLONE_RELEASE: "1.75.0"
+  RCLONE_BUNDLE_SHA256: aa2804e08f48250e71009c727124b6341cd0288465804a9a09d14663cabafbaa
+  RCLONE_OSX_AMD64_BUNDLE_SHA256: 19edbb8e5e73096eb66e92a42abbc5c34bfa8981ea3986a53872c7eef85a22f4
 
 jobs:
   bootstrap:
@@ -64,11 +76,48 @@ jobs:
         shell: bash
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-runner-space-reclaim.sh"
 
+      - name: Compute the immutable Engine checkpoint key
+        if: ${{ inputs.publish_engine_checkpoint }}
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-engine-checkpoint-key.sh"
+
+      - name: Require a build stage for Engine checkpoint seeding
+        if: ${{ inputs.publish_engine_checkpoint }}
+        shell: bash
+        env:
+          BOOTSTRAP_STAGE: ${{ inputs.bootstrap_stage }}
+        run: |
+          set -euo pipefail
+          test "$BOOTSTRAP_STAGE" = build || {
+            echo 'publish_engine_checkpoint requires bootstrap_stage=build.' >&2
+            exit 1
+          }
+
+      - name: Install pinned rclone for the private Engine checkpoint
+        if: ${{ inputs.publish_engine_checkpoint }}
+        uses: ./.github/actions/setup-rclone
+        with:
+          version: ${{ env.RCLONE_RELEASE }}
+          bundle-sha256: ${{ env.RCLONE_BUNDLE_SHA256 }}
+          osx-amd64-bundle-sha256: ${{ env.RCLONE_OSX_AMD64_BUNDLE_SHA256 }}
+
+      - name: Probe the private Engine checkpoint
+        id: probe_engine_checkpoint
+        if: ${{ inputs.publish_engine_checkpoint }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-ue5-engine-transfer.sh" \
+            probe - "$ENGINE_CHECKPOINT_STAGE" "$ENGINE_CHECKPOINT_KEY"
+
       - name: Check out exact licensed UE 5.5.4 source
+        if: ${{ !inputs.publish_engine_checkpoint || steps.probe_engine_checkpoint.outputs.hit != 'true' }}
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: EpicGames/UnrealEngine
-          ref: 5.5.4-release
+          ref: ${{ env.UE5_SOURCE_SHA }}
           token: ${{ secrets.GHCR_TOKEN }}
           path: ue5-source
           fetch-depth: 1
@@ -78,10 +127,21 @@ jobs:
           persist-credentials: false
 
       - name: Bootstrap exact UE source
+        if: ${{ !inputs.publish_engine_checkpoint || steps.probe_engine_checkpoint.outputs.hit != 'true' }}
         shell: bash
         env:
           BOOTSTRAP_STAGE: ${{ inputs.bootstrap_stage }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ue5-macos-source-bootstrap.sh"
+
+      - name: Upload and byte-verify the prepared Engine checkpoint
+        if: ${{ inputs.publish_engine_checkpoint && steps.probe_engine_checkpoint.outputs.hit != 'true' }}
+        shell: bash
+        env:
+          RCLONE_CONFIG_CONTENT: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          set -euo pipefail
+          bash "$GITHUB_WORKSPACE/.github/scripts/rclone-private-ue5-engine-transfer.sh" \
+            upload "$GITHUB_WORKSPACE/ue5-source" "$ENGINE_CHECKPOINT_STAGE" "$ENGINE_CHECKPOINT_KEY"
 
       - name: Upload sanitized source audit
         if: ${{ always() }}
@@ -92,5 +152,6 @@ jobs:
             ${{ runner.temp }}/ue5-macos-hosted-probe.txt
             ${{ runner.temp }}/ue5-macos-runner-space-reclaim.txt
             ${{ runner.temp }}/ue5-macos-source-bootstrap.txt
+            ${{ runner.temp }}/ue5-macos-engine-checkpoint-transfer.txt
           if-no-files-found: warn
           retention-days: 7
