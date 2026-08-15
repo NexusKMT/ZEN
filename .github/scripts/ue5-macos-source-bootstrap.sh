@@ -17,6 +17,9 @@ EXPECTED_RUNNER_ARCH="${EXPECTED_RUNNER_ARCH:-X64}"
 EXPECTED_XCODE_VERSION="${EXPECTED_XCODE_VERSION:-16.4}"
 EXPECTED_XCODE_BUILD="${EXPECTED_XCODE_BUILD:-16F6}"
 EXPECTED_IPHONEOS_SDK="${EXPECTED_IPHONEOS_SDK:-18.5}"
+BUILD_COMPILER_ARGUMENTS="-Wno-shorten-64-to-32"
+FBX_REDBLACKTREE_SHA256_BEFORE="cd5891b83493f1335302eedf2f62498ce5b42d9a9fdaa4fc02d2437194522c1b"
+FBX_REDBLACKTREE_SHA256_AFTER="49efee242da7c0381dcb56f524c496e0f95d19bd39ba20367ba893c52d3d6a97"
 audit_file="$RUNNER_TEMP/ue5-macos-source-bootstrap.txt"
 setup_log="$RUNNER_TEMP/ue5-macos-source-setup.log"
 generate_log="$RUNNER_TEMP/ue5-macos-source-generate.log"
@@ -114,6 +117,8 @@ fi
 command -v git >/dev/null || fail 'git is unavailable.'
 command -v jq >/dev/null || fail 'jq is unavailable.'
 command -v mkfile >/dev/null || fail 'mkfile is unavailable.'
+command -v perl >/dev/null || fail 'perl is unavailable.'
+command -v shasum >/dev/null || fail 'shasum is unavailable.'
 command -v xcodebuild >/dev/null || fail 'xcodebuild is unavailable.'
 command -v xcode-select >/dev/null || fail 'xcode-select is unavailable.'
 command -v xcrun >/dev/null || fail 'xcrun is unavailable.'
@@ -184,6 +189,7 @@ build_seconds=0
 editor_arch=not-built
 shader_worker_arch=not-built
 editor_binary_bytes=0
+fbx_redblacktree_patch=not-required
 
 if test "$BOOTSTRAP_STAGE" != checkout; then
   current_phase=reserve-disk
@@ -227,13 +233,33 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
   fi
 
   if test "$BOOTSTRAP_STAGE" = build; then
+    current_phase=apply-xcode-compatibility
+    fbx_redblacktree_file="$SOURCE_DIR/Engine/Source/ThirdParty/FBX/2020.2/include/fbxsdk/core/base/fbxredblacktree.h"
+    test -f "$fbx_redblacktree_file" || fail 'The FBX red-black tree header is missing.'
+    fbx_redblacktree_sha256="$(shasum -a 256 "$fbx_redblacktree_file" | awk '{ print $1 }')"
+    case "$fbx_redblacktree_sha256" in
+      "$FBX_REDBLACKTREE_SHA256_BEFORE")
+        perl -0pi -e 's/mLefttChild/mLeftChild/g' "$fbx_redblacktree_file" ||
+          fail 'Could not apply the UE 5.5.4 FBX red-black tree compatibility correction.'
+        fbx_redblacktree_patch=applied
+        ;;
+      "$FBX_REDBLACKTREE_SHA256_AFTER")
+        fbx_redblacktree_patch=already-applied
+        ;;
+      *)
+        fail 'The UE 5.5.4 FBX red-black tree header does not match the audited compatibility input.'
+        ;;
+    esac
+    test "$(shasum -a 256 "$fbx_redblacktree_file" | awk '{ print $1 }')" = "$FBX_REDBLACKTREE_SHA256_AFTER" ||
+      fail 'The UE 5.5.4 FBX red-black tree compatibility correction failed verification.'
+
     current_phase=build-unreal-editor
     build_start="$(date +%s)"
     if ! run_source_command "$build_log" "$build_command" \
       UnrealEditor Mac Development \
       -buildscw \
       -MaxParallelActions=2 \
-      -CompilerArguments=-Wno-shorten-64-to-32 \
+      -CompilerArguments="$BUILD_COMPILER_ARGUMENTS" \
       -NoUBA \
       -NoUBALocal \
       -NoXGE \
@@ -295,6 +321,8 @@ disk_after_gib="$(disk_free_gib)"
   echo 'setup_threads=3'
   printf 'disk_reserve_gib=%s\n' "$DISK_RESERVE_GIB"
   echo 'build_max_parallel_actions=2'
+  printf 'build_compiler_arguments=%s\n' "$BUILD_COMPILER_ARGUMENTS"
+  printf 'fbx_redblacktree_patch=%s\n' "$fbx_redblacktree_patch"
   printf 'reserve_allocation_seconds=%s\n' "$reserve_seconds"
   printf 'setup_seconds=%s\n' "$setup_seconds"
   printf 'generate_seconds=%s\n' "$generate_seconds"
@@ -321,6 +349,8 @@ disk_after_gib="$(disk_free_gib)"
   printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
   echo '| GitDependencies cache / threads | `disabled` / `3` |'
   printf '| Editor build / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
+  printf '| Compiler compatibility arguments | `%s` |\n' "$BUILD_COMPILER_ARGUMENTS"
+  printf '| FBX red-black tree compatibility patch | `%s` |\n' "$fbx_redblacktree_patch"
   printf '| Editor / ShaderCompileWorker | `%s` / `%s`, `%s bytes` |\n' \
     "$editor_arch" "$shader_worker_arch" "$editor_binary_bytes"
   printf '| Emergency disk reserve | `%s GiB` |\n' "$DISK_RESERVE_GIB"
