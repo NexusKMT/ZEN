@@ -253,11 +253,25 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
     test "$(shasum -a 256 "$fbx_redblacktree_file" | awk '{ print $1 }')" = "$FBX_REDBLACKTREE_SHA256_AFTER" ||
       fail 'The UE 5.5.4 FBX red-black tree compatibility correction failed verification.'
 
-    current_phase=build-unreal-editor
+    current_phase=build-shader-compile-worker
     build_start="$(date +%s)"
     if ! run_source_command "$build_log" "$build_command" \
+      ShaderCompileWorker Mac Development \
+      -MaxParallelActions=2 \
+      -CompilerArguments="$BUILD_COMPILER_ARGUMENTS" \
+      -NoUBA \
+      -NoUBALocal \
+      -NoXGE \
+      -NoFASTBuild \
+      -NoSNDBS \
+      -NoArtifactReads \
+      -NoArtifactWrites
+    then
+      fail 'ShaderCompileWorker Mac Development build failed; inspect the live Actions log for its console output.'
+    fi
+    current_phase=build-unreal-editor
+    if ! run_source_command "$build_log" "$build_command" \
       UnrealEditor Mac Development \
-      -buildscw \
       -MaxParallelActions=2 \
       -CompilerArguments="$BUILD_COMPILER_ARGUMENTS" \
       -NoUBA \
@@ -348,7 +362,7 @@ disk_after_gib="$(disk_free_gib)"
   printf '| Setup / project generation | `%s s` / `%s s` |\n' "$setup_seconds" "$generate_seconds"
   printf '| Setup exclusions | `%s` |\n' "$SETUP_EXCLUDES"
   echo '| GitDependencies cache / threads | `disabled` / `3` |'
-  printf '| Editor build / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
+  printf '| ShaderCompileWorker + editor builds / max parallel actions | `%s s` / `2` |\n' "$build_seconds"
   printf '| Compiler compatibility arguments | `%s` |\n' "$BUILD_COMPILER_ARGUMENTS"
   printf '| FBX red-black tree compatibility patch | `%s` |\n' "$fbx_redblacktree_patch"
   printf '| Editor / ShaderCompileWorker | `%s` / `%s`, `%s bytes` |\n' \
