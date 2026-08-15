@@ -40,7 +40,7 @@ recipe_sha256="$({
   printf 'setup_excludes=%s\n' "$SETUP_EXCLUDES"
   printf 'bootstrap_script_sha256=%s\n' "$bootstrap_script_sha256"
   printf 'build_target=UnrealEditor Mac Development\n'
-  printf 'build_flags=-buildscw -MaxParallelActions=2 -NoUBA -NoUBALocal -NoXGE -NoFASTBuild -NoSNDBS -NoArtifactReads -NoArtifactWrites\n'
+  printf 'build_flags=-buildscw -MaxParallelActions=2 -CompilerArguments=-Wno-shorten-64-to-32 -NoUBA -NoUBALocal -NoXGE -NoFASTBuild -NoSNDBS -NoArtifactReads -NoArtifactWrites\n'
 } | shasum -a 256 | awk '{ print $1 }')"
 
 xcode_build_lc="$(printf '%s' "$EXPECTED_XCODE_BUILD" | tr '[:upper:]' '[:lower:]')"

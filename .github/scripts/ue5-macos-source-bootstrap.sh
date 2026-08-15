@@ -233,6 +233,7 @@ if test "$BOOTSTRAP_STAGE" != checkout; then
       UnrealEditor Mac Development \
       -buildscw \
       -MaxParallelActions=2 \
+      -CompilerArguments=-Wno-shorten-64-to-32 \
       -NoUBA \
       -NoUBALocal \
       -NoXGE \
